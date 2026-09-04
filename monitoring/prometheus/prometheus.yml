@@ -2,20 +2,28 @@
 # Nexus OMS — Prometheus configuration
 # =============================================================================
 #
-# NOTE ON SCRAPE TARGETS:
-# The backend protects /actuator/** with the ADMIN role (see SecurityConfig),
-# so /actuator/prometheus requires a JWT and cannot be scraped anonymously.
-# Kafka, Redis and Postgres expose raw TCP ports, not HTTP scrape endpoints,
-# and require dedicated exporters (kafka-exporter, redis-exporter,
-# postgres-exporter) to be scraped.
+# PLUG & PLAY: Works on same machine or distributed across multiple machines.
 #
-# To enable full metrics:
-#   1. Add the relevant exporters as services in docker-compose.yml, OR
-#   2. Expose the backend prometheus endpoint to an internal network.
+# For SINGLE MACHINE: All targets use Docker service names (internal DNS).
+#   Just run `docker compose up -d` and everything connects automatically.
 #
-# The targets below are intentionally limited to what is reachable out of the
-# box. Prometheus and Grafana still run as a ready platform; add exporters to
-# populate dashboards.
+# For MULTI-MACHINE: Replace Docker service names with actual hostnames/IPs.
+#   The targets below use Docker Compose service names by default.
+#   When running services on separate machines, update each target's address.
+#
+#   Example multi-machine layout:
+#     Machine A (10.0.1.10): backend, prometheus, grafana, all exporters
+#     Machine B (10.0.1.11): postgres, redis, kafka
+#
+#   In that case, change:
+#     targets: ['backend:8080']  ->  targets: ['10.0.1.10:8080']
+#     targets: ['postgres-exporter:9187']  ->  targets: ['10.0.1.11:9187']
+#     targets: ['redis-exporter:9121']  ->  targets: ['10.0.1.11:9121']
+#
+#   For remote machines, exporters must be exposed via docker-compose ports:
+#     postgres-exporter: "9187:9187"
+#     redis-exporter: "9121:9121"
+#
 # =============================================================================
 
 global:
@@ -31,23 +39,90 @@ rule_files:
   - "alerts.yml"
 
 scrape_configs:
-  # Backend metrics require ADMIN auth (JWT) — see note above.
-  # Uncomment and add a bearer token if you expose the endpoint internally.
-  # - job_name: 'nexus-oms-backend'
-  #   metrics_path: '/api/v1/actuator/prometheus'
-  #   static_configs:
-  #     - targets: ['backend:8080']
-  #       labels:
-  #         application: 'nexus-oms'
-  #         environment: 'production'
+  # ---------------------------------------------------------------------------
+  # Prometheus self-monitoring
+  # ---------------------------------------------------------------------------
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus'
 
-  # Kafka / Redis / Postgres require dedicated exporters — see note above.
-  # - job_name: 'kafka'
-  #   static_configs:
-  #     - targets: ['kafka-exporter:9308']
-  # - job_name: 'redis'
-  #   static_configs:
-  #     - targets: ['redis-exporter:9121']
-  # - job_name: 'postgres'
-  #   static_configs:
-  #     - targets: ['postgres-exporter:9187']
+  # ---------------------------------------------------------------------------
+  # Nexus OMS Backend — Spring Boot actuator/micrometer metrics
+  # Multi-machine: change 'backend:8080' to '<backend-host-ip>:8080'
+  # ---------------------------------------------------------------------------
+  - job_name: 'nexus-oms-backend'
+    metrics_path: '/api/v1/actuator/prometheus'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['backend:8080']  # Multi-machine: replace with IP, e.g. '10.0.1.10:8080'
+        labels:
+          service: 'nexus-backend'
+          environment: '${ENVIRONMENT:-production}'
+
+  # ---------------------------------------------------------------------------
+  # Grafana self-monitoring
+  # ---------------------------------------------------------------------------
+  - job_name: 'grafana'
+    static_configs:
+      - targets: ['grafana:3000']
+        labels:
+          service: 'grafana'
+
+  # ---------------------------------------------------------------------------
+  # Postgres Exporter — database connection pool, queries, replication
+  # Multi-machine: change 'postgres-exporter:9187' to '<postgres-host>:9187'
+  # ---------------------------------------------------------------------------
+  - job_name: 'postgres-exporter'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['postgres-exporter:9187']  # Multi-machine: replace with IP
+        labels:
+          service: 'postgres'
+
+  # ---------------------------------------------------------------------------
+  # Redis Exporter — cache hit rate, memory, connections, commands
+  # Multi-machine: change 'redis-exporter:9121' to '<redis-host>:9121'
+  # ---------------------------------------------------------------------------
+  - job_name: 'redis-exporter'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['redis-exporter:9121']  # Multi-machine: replace with IP
+        labels:
+          service: 'redis'
+
+  # ---------------------------------------------------------------------------
+  # Kafka Exporter — broker metrics, consumer group lag
+  # Multi-machine: change 'kafka-exporter:9308' to '<kafka-host>:9308'
+  # ---------------------------------------------------------------------------
+  - job_name: 'kafka-exporter'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['kafka-exporter:9308']  # Multi-machine: replace with IP
+        labels:
+          service: 'kafka'
+
+  # ---------------------------------------------------------------------------
+  # Node Exporter — host system metrics (CPU, memory, disk, network)
+  # Multi-machine: add multiple targets for each host:
+  #   targets: ['10.0.1.10:9100', '10.0.1.11:9100']
+  # ---------------------------------------------------------------------------
+  - job_name: 'node-exporter'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['node-exporter:9100']  # Multi-machine: replace with IP
+        labels:
+          service: 'node'
+
+  # ---------------------------------------------------------------------------
+  # cAdvisor — container-level CPU, memory, network, I/O per container
+  # Multi-machine: change 'cadvisor:8080' to '<host>:8080'
+  # Note: per-container metrics require Linux cgroups (not Docker Desktop Mac)
+  # ---------------------------------------------------------------------------
+  - job_name: 'cadvisor'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['cadvisor:8080']  # Multi-machine: replace with IP
+        labels:
+          service: 'cadvisor'

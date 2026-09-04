@@ -195,6 +195,100 @@ services:
       - nexus-network
 
   # ---------------------------------------------------------------------------
+  # Postgres Exporter — database metrics
+  # ---------------------------------------------------------------------------
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: nexus-postgres-exporter
+    environment:
+      DATA_SOURCE_NAME: "postgresql://nexus:${DB_PASSWORD:?DB_PASSWORD not set}@postgres:5432/nexus_oms?sslmode=disable"
+    ports:
+      - "9187:9187"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - nexus-network
+
+  # ---------------------------------------------------------------------------
+  # Redis Exporter — cache metrics
+  # ---------------------------------------------------------------------------
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.62.0-alpine
+    container_name: nexus-redis-exporter
+    environment:
+      REDIS_ADDR: "redis://redis:6379"
+    ports:
+      - "9121:9121"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - nexus-network
+
+  # ---------------------------------------------------------------------------
+  # Kafka Exporter — broker & consumer lag metrics
+  # ---------------------------------------------------------------------------
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.7.0
+    container_name: nexus-kafka-exporter
+    command:
+      - '--kafka.server=kafka:9092'
+      - '--web.listen-address=:9308'
+    ports:
+      - "9308:9308"
+    depends_on:
+      kafka:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - nexus-network
+
+  # ---------------------------------------------------------------------------
+  # Node Exporter — host system metrics (CPU, memory, disk, network)
+  # ---------------------------------------------------------------------------
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: nexus-node-exporter
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/host/root'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host/root:ro
+    restart: unless-stopped
+    networks:
+      - nexus-network
+
+  # ---------------------------------------------------------------------------
+  # cAdvisor — container-level metrics (CPU, memory, network per container)
+  # ---------------------------------------------------------------------------
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: nexus-cadvisor
+    ports:
+      - "8082:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    privileged: true
+    devices:
+      - /dev/kmsg
+    restart: unless-stopped
+    networks:
+      - nexus-network
+
+  # ---------------------------------------------------------------------------
   # Prometheus — metrics scraping
   # ---------------------------------------------------------------------------
   prometheus:
@@ -209,6 +303,12 @@ services:
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
+    depends_on:
+      - postgres-exporter
+      - redis-exporter
+      - kafka-exporter
+      - node-exporter
+      - cadvisor
     restart: unless-stopped
     networks:
       - nexus-network
