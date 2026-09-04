@@ -33,10 +33,11 @@ global:
 alerting:
   alertmanagers:
     - static_configs:
-        - targets: []
+        - targets: ['alertmanager:9093']
 
 rule_files:
   - "alerts.yml"
+  - "recording-rules.yml"
 
 scrape_configs:
   # ---------------------------------------------------------------------------
@@ -126,3 +127,13 @@ scrape_configs:
       - targets: ['cadvisor:8080']  # Multi-machine: replace with IP
         labels:
           service: 'cadvisor'
+
+  # ---------------------------------------------------------------------------
+  # Loki — log aggregation metrics
+  # ---------------------------------------------------------------------------
+  - job_name: 'loki'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['loki:3100']
+        labels:
+          service: 'loki'

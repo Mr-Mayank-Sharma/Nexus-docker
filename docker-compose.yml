@@ -289,6 +289,57 @@ services:
       - nexus-network
 
   # ---------------------------------------------------------------------------
+  # Alertmanager — alert routing & notifications
+  # ---------------------------------------------------------------------------
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: nexus-alertmanager
+    volumes:
+      - ./monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+      - alertmanager-data:/alertmanager
+    ports:
+      - "9093:9093"
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    restart: unless-stopped
+    networks:
+      - nexus-network
+
+  # ---------------------------------------------------------------------------
+  # Loki — centralized log storage & querying
+  # ---------------------------------------------------------------------------
+  loki:
+    image: grafana/loki:3.2.1
+    container_name: nexus-loki
+    volumes:
+      - ./monitoring/loki/loki.yml:/etc/loki/local-config.yaml
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    restart: unless-stopped
+    networks:
+      - nexus-network
+
+  # ---------------------------------------------------------------------------
+  # Promtail — log collection (ships Docker logs to Loki)
+  # ---------------------------------------------------------------------------
+  promtail:
+    image: grafana/promtail:3.2.1
+    container_name: nexus-promtail
+    volumes:
+      - ./monitoring/loki/promtail.yml:/etc/promtail/config.yml
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - promtail-data:/tmp
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+    restart: unless-stopped
+    networks:
+      - nexus-network
+
+  # ---------------------------------------------------------------------------
   # Prometheus — metrics scraping
   # ---------------------------------------------------------------------------
   prometheus:
@@ -297,18 +348,21 @@ services:
     volumes:
       - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
       - ./monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml
+      - ./monitoring/prometheus/recording-rules.yml:/etc/prometheus/recording-rules.yml
       - prometheus-data:/prometheus
     ports:
       - "9090:9090"
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
     depends_on:
       - postgres-exporter
       - redis-exporter
       - kafka-exporter
       - node-exporter
       - cadvisor
+      - alertmanager
     restart: unless-stopped
     networks:
       - nexus-network
@@ -329,8 +383,11 @@ services:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD not set}
       - GF_INSTALL_PLUGINS=grafana-piechart-panel
+      - GF_ALERTING_ENABLED=true
+      - GF_UNIFIED_ALERTING_ENABLED=true
     depends_on:
       - prometheus
+      - loki
     restart: unless-stopped
     networks:
       - nexus-network
@@ -344,6 +401,9 @@ volumes:
   kafka-data:
   prometheus-data:
   grafana-data:
+  alertmanager-data:
+  loki-data:
+  promtail-data:
 
 # -----------------------------------------------------------------------------
 # Network
