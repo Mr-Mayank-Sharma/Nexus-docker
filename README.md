@@ -123,6 +123,19 @@ git pull
 docker compose up -d --build
 ```
 
+## Documentation
+
+Comprehensive guides for deploying, onboarding, sizing, and operating Nexus:
+
+| Guide | Covers |
+|-------|--------|
+| [**Deployment Guide**](docs/DEPLOYMENT.md) | Deploy on local, EC2/VPS, AWS ECS, GCP, Azure, DigitalOcean. TLS, backups, troubleshooting. |
+| [**Onboarding Guide**](docs/ONBOARDING.md) | Onboard **regional** and **international** merchants. Integrations, data migration, go-live. |
+| [**Sizing Guide**](docs/SIZING.md) | Size by **record processing volume**. 5 tiers + detailed case studies (500 → 1M+ orders/day). |
+| [**Environment Guide**](docs/ENVIRONMENTS.md) | Set up **Dev / UAT / Prod** on local and cloud. Environment isolation, promotion. |
+| [**Operations Guide**](docs/OPERATIONS.md) | Day-2 ops: monitoring, backups, upgrades, scaling, incident response, runbooks. |
+| [**Architecture Guide**](docs/ARCHITECTURE.md) | Platform architecture: services, data model, integrations, AI, security. |
+
 ## Repository layout
 
 ```
