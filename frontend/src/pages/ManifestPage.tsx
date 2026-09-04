@@ -1,0 +1,618 @@
+import { useState, useMemo, useEffect } from 'react'
+import {
+  ClipboardList, Search, Plus, X, Loader2, CheckCircle,
+  Download, Eye, FileText, Truck, DollarSign, Package, PenLine, Send, Ban,
+} from 'lucide-react'
+import { useToast } from '../hooks/useToast'
+import PermissionGate from '../components/rbac/PermissionGate'
+import clsx from 'clsx'
+import Autocomplete from '../components/common/Autocomplete'
+import { fetchManifests, createManifest, updateManifest, fetchCarriers } from '../api/newBackend'
+import { getShipments } from '../api/shipping'
+import { fmtMoney, fmtNumber } from '../utils/format'
+
+interface ManifestShipment {
+  id: string
+  orderId: string
+  tracking: string
+  weight?: number
+  cost?: number
+  service: string
+  destination?: string
+  status?: string
+}
+
+interface Manifest {
+  id: string
+  carrier: string
+  date: string
+  shipments: ManifestShipment[]
+  totalWeight: number
+  totalCost: number
+  status: 'Draft' | 'Closed' | 'Submitted'
+  bolNumber?: string
+}
+
+const CARRIERS = ['FedEx', 'UPS', 'DHL', 'USPS'] as const
+
+const STATUS_STYLES: Record<string, string> = {
+  Draft: 'bg-[var(--surface-muted)] text-[var(--text-secondary)] bg-[var(--surface-base)] dark:text-[var(--text-tertiary)]',
+  Closed: 'bg-[var(--nexus-primary-100)] text-[var(--nexus-primary-700)] dark:bg-[var(--nexus-primary-900)]/30 dark:text-[var(--nexus-primary-400)]',
+  Submitted: 'bg-[var(--nexus-success-100)] text-[var(--nexus-success-700)] dark:bg-[var(--nexus-success-900)]/30 dark:text-[var(--nexus-success-400)]',
+}
+
+function toManifestShipment(row: any): ManifestShipment {
+  return {
+    id: row.id,
+    orderId: row.orderId || row.orderNumber || '',
+    tracking: row.trackingNumber || '',
+    service: row.serviceLevel || row.service || '',
+    status: row.status || 'PENDING',
+    weight: typeof row.weight === 'number' ? row.weight : undefined,
+    cost: typeof row.shippingCost === 'number' ? row.shippingCost : undefined,
+    destination: row.destination || row.city || '',
+  }
+}
+
+
+
+export default function ManifestPage() {
+  const { addToast } = useToast()
+  const [searchManifest, setSearchManifest] = useState('')
+
+  const [createCarrier, setCreateCarrier] = useState('FedEx')
+  const [dateFrom, setDateFrom] = useState(() => {
+    const d = new Date()
+    d.setDate(d.getDate() - 7)
+    return d.toISOString().split('T')[0]
+  })
+  const [dateTo, setDateTo] = useState(() => new Date().toISOString().split('T')[0])
+  const [fetchedShipments, setFetchedShipments] = useState<ManifestShipment[]>([])
+  const [selectedShipments, setSelectedShipments] = useState<string[]>([])
+  const [isFetching, setIsFetching] = useState(false)
+  const [fetched, setFetched] = useState(false)
+
+  const [manifests, setManifests] = useState<any[]>([])
+
+  useEffect(() => {
+    Promise.all([fetchManifests(), fetchCarriers()]).then(([m, _c]) => {
+      if (m?.data) setManifests(m.data)
+    }).catch(() => {})
+  }, [])
+  const [selectedManifest, setSelectedManifest] = useState<Manifest | null>(null)
+  const [showDetail, setShowDetail] = useState(false)
+
+  const [signature, setSignature] = useState('')
+  const [scanInput, setScanInput] = useState('')
+
+  const filteredManifests = useMemo(() => {
+    if (!searchManifest) return manifests
+    const q = searchManifest.toLowerCase()
+    return manifests.filter(m =>
+      m.id.toLowerCase().includes(q) ||
+      m.carrier.toLowerCase().includes(q) ||
+      (m.bolNumber || '').toLowerCase().includes(q)
+    )
+  }, [manifests, searchManifest])
+
+  const totals = useMemo(() => {
+    const totalShipments = manifests.reduce((sum, m) => sum + (m.shipments?.length || 0), 0)
+    const totalCost = manifests.reduce((sum, m) => sum + (m.totalCost || 0), 0)
+    return {
+      totalManifests: manifests.length,
+      totalShipments,
+      totalCost,
+      avgCost: totalShipments > 0 ? totalCost / totalShipments : 0,
+    }
+  }, [manifests])
+
+  async function handleFetchShipments() {
+    if (!dateFrom || !dateTo) {
+      addToast({ type: 'error', title: 'Select a date range' })
+      return
+    }
+    setIsFetching(true)
+    const res = await getShipments()
+    setIsFetching(false)
+    const from = new Date(`${dateFrom}T00:00:00`)
+    const to = new Date(`${dateTo}T23:59:59`)
+    const shipments = (res.data || [])
+      .filter((s: any) => !s.voided)
+      .filter((s: any) => {
+        if (!s.createdAt) return true
+        const t = new Date(s.createdAt)
+        return t >= from && t <= to
+      })
+      .map(toManifestShipment)
+    setFetchedShipments(shipments)
+    setSelectedShipments(shipments.map(s => s.id))
+    setFetched(true)
+    if (shipments.length === 0) {
+      addToast({ type: 'info', title: 'No shipments found in the selected range' })
+    } else {
+      addToast({ type: 'success', title: `${shipments.length} shipments fetched` })
+    }
+  }
+
+  function toggleShipment(id: string) {
+    setSelectedShipments(prev =>
+      prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id]
+    )
+  }
+
+  async function handleCreateManifest(data: any) {
+    const res = await createManifest(data)
+    if (!res?.success) {
+      addToast({ type: 'error', title: 'Failed to create manifest' })
+      return
+    }
+    const created = res.data || {}
+    const manifest: Manifest = {
+      id: created.id || `MNF-${Date.now()}`,
+      carrier: data.carrier,
+      date: data.date,
+      shipments: data.shipments || [],
+      status: created.status === 'created' ? 'Draft' : (created.status || 'Draft'),
+      totalWeight: (data.shipments || []).reduce((sum: number, s: ManifestShipment) => sum + (s.weight || 0), 0),
+      totalCost: (data.shipments || []).reduce((sum: number, s: ManifestShipment) => sum + (s.cost || 0), 0),
+    }
+    setManifests(prev => [manifest, ...prev])
+    setFetched(false)
+    addToast({ type: 'success', title: 'Manifest created' })
+  }
+
+  function handleViewDetail(manifest: Manifest) {
+    setSelectedManifest(manifest)
+    setShowDetail(true)
+  }
+
+  function handleDownload(manifest: Manifest) {
+    addToast({ type: 'info', title: `Manifest download not available yet (${manifest.id})` })
+  }
+
+  async function handleUpdateManifest(id: string, updates: any) {
+    const res = await updateManifest(id, updates)
+    if (!res?.success) {
+      addToast({ type: 'error', title: 'Failed to update manifest' })
+      return
+    }
+    setManifests(prev => prev.map(m => m.id === id ? { ...m, ...updates, id: res.data?.id || m.id } : m))
+    addToast({ type: 'success', title: 'Manifest updated' })
+  }
+
+  function handleVoid(manifest: Manifest) {
+    setManifests(prev => prev.filter(m => m.id !== manifest.id))
+    addToast({ type: 'success', title: `Manifest ${manifest.id} voided` })
+  }
+
+  async function handleCloseManifest() {
+    if (!selectedManifest) return
+    await handleUpdateManifest(selectedManifest.id, { status: 'Closed' })
+    setSelectedManifest(prev => prev ? { ...prev, status: 'Closed' } : null)
+    setShowDetail(false)
+  }
+
+  async function handleSubmitFromDetail() {
+    if (!selectedManifest) return
+    await handleUpdateManifest(selectedManifest.id, { status: 'Submitted' })
+    setShowDetail(false)
+  }
+
+  function handleBOLScan() {
+    if (!scanInput.trim()) {
+      addToast({ type: 'error', title: 'Scan or enter BOL number' })
+      return
+    }
+    addToast({ type: 'success', title: `BOL ${scanInput} recorded` })
+    setScanInput('')
+  }
+
+  function handleSign() {
+    if (!signature.trim()) {
+      addToast({ type: 'error', title: 'Please provide a signature' })
+      return
+    }
+    addToast({ type: 'success', title: 'BOL signed and closed out' })
+    setSignature('')
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-[var(--text-primary)] flex items-center gap-2.5">
+            <ClipboardList className="w-5 h-5" />Shipping Manifests
+          </h1>
+          <p className="text-sm text-[var(--text-secondary)] mt-0.5">End-of-day carrier manifests</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+        <div className="enterprise-card p-4 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-lg bg-[var(--nexus-primary-500)] flex items-center justify-center text-white shrink-0">
+            <ClipboardList className="w-5 h-5" />
+          </div>
+          <div>
+            <p className="text-xs text-[var(--text-tertiary)]">Total Manifests</p>
+            <p className="text-xl font-bold text-[var(--text-primary)]">{totals.totalManifests}</p>
+          </div>
+        </div>
+        <div className="enterprise-card p-4 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-lg bg-[var(bg-[var(--nexus-ai-500)])] flex items-center justify-center text-white shrink-0">
+            <Package className="w-5 h-5" />
+          </div>
+          <div>
+            <p className="text-xs text-[var(--text-tertiary)]">Total Shipments</p>
+            <p className="text-xl font-bold text-[var(--text-primary)]">{totals.totalShipments.toLocaleString()}</p>
+          </div>
+        </div>
+        <div className="enterprise-card p-4 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-lg bg-[var(--nexus-success-500)] flex items-center justify-center text-white shrink-0">
+            <DollarSign className="w-5 h-5" />
+          </div>
+          <div>
+            <p className="text-xs text-[var(--text-tertiary)]">Total Cost</p>
+            <p className="text-xl font-bold text-[var(--text-primary)]">{fmtMoney(totals.totalCost)}</p>
+          </div>
+        </div>
+        <div className="enterprise-card p-4 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-lg bg-[var(--nexus-warning-500)] flex items-center justify-center text-white shrink-0">
+            <Truck className="w-5 h-5" />
+          </div>
+          <div>
+            <p className="text-xs text-[var(--text-tertiary)]">Avg Cost / Shipment</p>
+            <p className="text-xl font-bold text-[var(--text-primary)]">{fmtMoney(totals.avgCost)}</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="enterprise-card p-5">
+        <div className="flex items-center gap-2 mb-4">
+          <div className="w-8 h-8 rounded-lg bg-[var(--nexus-primary-500)] flex items-center justify-center text-white">
+            <Plus className="w-4 h-4" />
+          </div>
+          <div>
+            <h2 className="font-semibold text-[var(--text-primary)]">Create Manifest</h2>
+            <p className="text-xs text-[var(--text-tertiary)]">Generate an end-of-day carrier manifest</p>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+          <div className="space-y-1.5">
+            <label className="block text-xs font-medium text-[var(--text-secondary)]">Carrier</label>
+            <select value={createCarrier} onChange={e => setCreateCarrier(e.target.value)}
+              className="enterprise-input w-full">
+              {CARRIERS.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          <div className="space-y-1.5">
+            <label className="block text-xs font-medium text-[var(--text-secondary)]">Date From</label>
+            <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
+              className="enterprise-input w-full" />
+          </div>
+          <div className="space-y-1.5">
+            <label className="block text-xs font-medium text-[var(--text-secondary)]">Date To</label>
+            <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
+              className="enterprise-input w-full" />
+          </div>
+          <div className="flex items-end">
+            <PermissionGate resource="logistics" action="create">
+              <button type="button" onClick={handleFetchShipments} disabled={isFetching}
+                className="enterprise-btn enterprise-btn-primary w-full justify-center">
+                {isFetching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+                Fetch Shipments
+              </button>
+            </PermissionGate>
+          </div>
+        </div>
+
+        {fetched && (
+          <div className="border border-[var(--border-color)] rounded-lg overflow-hidden">
+            <div className="p-3 bg-[var(--bg-tertiary)] border-b border-[var(--border-color)] flex items-center justify-between">
+              <span className="text-sm font-medium text-[var(--text-primary)]">
+                {selectedShipments.length} of {fetchedShipments.length} shipments selected
+              </span>
+              <div className="flex items-center gap-2">
+                <button type="button" onClick={() => setSelectedShipments(fetchedShipments.map(s => s.id))}
+                  className="text-xs text-[var(--nexus-primary-600)] hover:underline">Select All</button>
+                <button type="button" onClick={() => setSelectedShipments([])}
+                  className="text-xs text-[var(--text-tertiary)] hover:underline">Clear</button>
+              </div>
+            </div>
+            <div className="max-h-60 overflow-y-auto divide-y divide-[var(--border-subtle)]">
+              {fetchedShipments.map(s => (
+                <label key={s.id}
+                  className={clsx(
+                    'flex items-center gap-3 px-4 py-2.5 cursor-pointer transition-colors text-sm',
+                    selectedShipments.includes(s.id) ? 'bg-[var(--nexus-primary-50)] dark:bg-[var(--nexus-primary-900)]/10' : 'hover:bg-[var(--bg-tertiary)]'
+                  )}>
+                  <input type="checkbox" checked={selectedShipments.includes(s.id)}
+                    onChange={() => toggleShipment(s.id)}
+                    className="w-4 h-4 rounded border-[var(--border-default)] text-[var(--nexus-primary-600)] focus:ring-[var(--nexus-primary-500)]" />
+                  <div className="flex-1 flex items-center justify-between">
+                    <div>
+                      <span className="text-[var(--text-primary)] font-medium">{s.orderId}</span>
+                      <span className="text-[var(--text-tertiary)] ml-2 text-xs">{s.service}</span>
+                    </div>
+                    <div className="flex items-center gap-4 text-xs text-[var(--text-secondary)]">
+                      <span>{s.weight != null ? `${s.weight} lbs` : '—'}</span>
+                      <span className="font-mono">{s.cost != null ? fmtMoney(s.cost) : '—'}</span>
+                      <span className="text-[var(--text-tertiary)]">{s.destination || '—'}</span>
+                    </div>
+                  </div>
+                </label>
+              ))}
+            </div>
+            <div className="p-3 bg-[var(--bg-tertiary)] border-t border-[var(--border-color)] flex justify-end">
+                <PermissionGate resource="logistics" action="create">
+                  <button type="button" onClick={() => handleCreateManifest({
+                        carrier: createCarrier,
+                        date: new Date().toISOString().split('T')[0],
+                        shipments: fetchedShipments.filter(s => selectedShipments.includes(s.id)),
+                      })}
+                  className="bg-[var(--nexus-primary-600)] text-white px-4 py-2 rounded-lg hover:bg-[var(--nexus-primary-700)] transition-colors inline-flex items-center gap-2 text-sm font-medium">
+                  <FileText className="w-4 h-4" /> Generate Manifest
+                </button>
+                </PermissionGate>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="enterprise-card overflow-hidden">
+        <div className="p-4 border-b border-[var(--border-color)] flex items-center justify-between flex-wrap gap-3">
+          <h3 className="font-semibold text-[var(--text-primary)] flex items-center gap-2">
+            <ClipboardList className="w-4 h-4 text-[var(--text-tertiary)]" /> Manifests
+          </h3>
+          <Autocomplete value={searchManifest} onChange={setSearchManifest} placeholder="Search manifests..." minChars={0} />
+        </div>
+        <div className="overflow-x-auto">
+          <table className="enterprise-table w-full text-sm">
+            <thead>
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-[var(--text-secondary)] uppercase">Manifest ID</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-[var(--text-secondary)] uppercase">Carrier</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-[var(--text-secondary)] uppercase">Date</th>
+                <th className="px-4 py-3 text-right text-xs font-semibold text-[var(--text-secondary)] uppercase">Shipments</th>
+                <th className="px-4 py-3 text-right text-xs font-semibold text-[var(--text-secondary)] uppercase">Total Weight</th>
+                <th className="px-4 py-3 text-right text-xs font-semibold text-[var(--text-secondary)] uppercase">Total Cost</th>
+                <th className="px-4 py-3 text-center text-xs font-semibold text-[var(--text-secondary)] uppercase">Status</th>
+                <th className="px-4 py-3 text-center text-xs font-semibold text-[var(--text-secondary)] uppercase">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[var(--border-subtle)]">
+              {filteredManifests.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="px-4 py-8 text-center text-sm text-[var(--text-tertiary)]">
+                    No manifests found
+                  </td>
+                </tr>
+              ) : (
+                filteredManifests.map(m => (
+                  <tr key={m.id} className="enterprise-table-row">
+                    <td className="px-4 py-3 font-mono text-xs text-[var(--text-primary)]">{m.id}</td>
+                    <td className="px-4 py-3 text-sm font-medium text-[var(--text-primary)]">{m.carrier}</td>
+                    <td className="px-4 py-3 text-sm text-[var(--text-secondary)]">{m.date}</td>
+                    <td className="px-4 py-3 text-right text-sm text-[var(--text-secondary)]">{m.shipments.length}</td>
+                    <td className="px-4 py-3 text-right text-sm text-[var(--text-secondary)]">{m.totalWeight != null ? `${fmtNumber(m.totalWeight, 1)} lbs` : '—'}</td>
+                    <td className="px-4 py-3 text-right text-sm font-mono text-[var(--text-primary)]">{m.totalCost != null ? fmtMoney(m.totalCost) : '—'}</td>
+                    <td className="px-4 py-3 text-center">
+                      <span className={clsx('inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium', STATUS_STYLES[m.status])}>
+                        {m.status}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center justify-center gap-1">
+                        <PermissionGate resource="logistics" action="read">
+                          <button type="button" onClick={() => handleViewDetail(m)}
+                            className="p-1.5 rounded-md hover:bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] hover:text-[var(--nexus-primary-600)] transition-colors"
+                            title="View">
+                            <Eye className="w-3.5 h-3.5" />
+                          </button>
+                        </PermissionGate>
+                        <PermissionGate resource="logistics" action="edit">
+                          <button type="button" onClick={() => handleDownload(m)}
+                            className="p-1.5 rounded-md hover:bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] hover:text-[var(--nexus-success-600)] transition-colors"
+                            title="Download">
+                            <Download className="w-3.5 h-3.5" />
+                          </button>
+                        </PermissionGate>
+                        {m.status !== 'Submitted' && (
+                          <PermissionGate resource="logistics" action="edit">
+                            <button type="button" onClick={() => handleUpdateManifest(m.id, { status: 'Submitted' })}
+                              className="p-1.5 rounded-md hover:bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] hover:text-[var(--nexus-primary-600)] transition-colors"
+                              title="Submit">
+                              <Send className="w-3.5 h-3.5" />
+                            </button>
+                          </PermissionGate>
+                        )}
+                        <PermissionGate resource="logistics" action="delete">
+                          <button type="button" onClick={() => handleVoid(m)}
+                            className="p-1.5 rounded-md hover:bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] hover:text-[var(--nexus-error-600)] transition-colors"
+                            title="Void">
+                            <Ban className="w-3.5 h-3.5" />
+                          </button>
+                        </PermissionGate>
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="enterprise-card p-5">
+          <div className="flex items-center gap-2 mb-4">
+            <div className="w-8 h-8 rounded-lg bg-[var(--nexus-success-500)] flex items-center justify-center text-white">
+              <DollarSign className="w-4 h-4" />
+            </div>
+            <div>
+              <h2 className="font-semibold text-[var(--text-primary)]">End-of-Day Summary</h2>
+              <p className="text-xs text-[var(--text-tertiary)]">Today's manifest overview</p>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="bg-[var(--bg-tertiary)] rounded-lg p-4">
+              <p className="text-xs text-[var(--text-tertiary)]">Total Manifests</p>
+              <p className="text-2xl font-bold text-[var(--text-primary)]">{totals.totalManifests}</p>
+            </div>
+            <div className="bg-[var(--bg-tertiary)] rounded-lg p-4">
+              <p className="text-xs text-[var(--text-tertiary)]">Total Shipments</p>
+              <p className="text-2xl font-bold text-[var(--text-primary)]">{totals.totalShipments.toLocaleString()}</p>
+            </div>
+            <div className="bg-[var(--bg-tertiary)] rounded-lg p-4">
+              <p className="text-xs text-[var(--text-tertiary)]">Total Cost</p>
+              <p className="text-2xl font-bold text-[var(--text-primary)]">{fmtMoney(totals.totalCost)}</p>
+            </div>
+            <div className="bg-[var(--bg-tertiary)] rounded-lg p-4">
+              <p className="text-xs text-[var(--text-tertiary)]">Avg Cost / Shipment</p>
+              <p className="text-2xl font-bold text-[var(--text-primary)]">{fmtMoney(totals.avgCost)}</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="enterprise-card p-5">
+          <div className="flex items-center gap-2 mb-4">
+            <div className="w-8 h-8 rounded-lg bg-[var(--nexus-warning-500)] flex items-center justify-center text-white">
+              <PenLine className="w-4 h-4" />
+            </div>
+            <div>
+              <h2 className="font-semibold text-[var(--text-primary)]">Carrier Close-out</h2>
+              <p className="text-xs text-[var(--text-tertiary)]">Scan / digitally sign BOL</p>
+            </div>
+          </div>
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <label className="block text-xs font-medium text-[var(--text-secondary)]">Scan BOL Number</label>
+              <div className="flex gap-2">
+                <input value={scanInput} onChange={e => setScanInput(e.target.value)}
+                  placeholder="Scan or type BOL number..."
+                  className="enterprise-input flex-1" />
+                <PermissionGate resource="logistics" action="edit">
+                  <button type="button" onClick={handleBOLScan}
+                    className="enterprise-btn enterprise-btn-secondary">
+                    <Search className="w-4 h-4" /> Scan
+                  </button>
+                </PermissionGate>
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <label className="block text-xs font-medium text-[var(--text-secondary)]">Digital Signature</label>
+              <textarea value={signature} onChange={e => setSignature(e.target.value)}
+                placeholder="Type your full name to sign..."
+                rows={2} className="enterprise-input w-full" />
+            </div>
+            <PermissionGate resource="logistics" action="edit">
+              <button type="button" onClick={handleSign}
+                className="enterprise-btn enterprise-btn-primary w-full justify-center">
+                <PenLine className="w-4 h-4" /> Sign & Close Out
+              </button>
+            </PermissionGate>
+          </div>
+        </div>
+      </div>
+
+      {showDetail && selectedManifest && (
+        <div className="enterprise-modal-overlay"
+          onClick={() => setShowDetail(false)}>
+          <div className="enterprise-card p-6 w-full max-w-3xl mx-4 max-h-[85vh] overflow-y-auto"
+            onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-[var(--nexus-primary-500)] flex items-center justify-center text-white">
+                  <ClipboardList className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-semibold text-[var(--text-primary)]">Manifest {selectedManifest.id}</h2>
+                  <p className="text-xs text-[var(--text-tertiary)]">{selectedManifest.carrier} · {selectedManifest.date}</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className={clsx('inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium', STATUS_STYLES[selectedManifest.status])}>
+                  {selectedManifest.status}
+                </span>
+                <button type="button" onClick={() => setShowDetail(false)}
+                  className="p-1 hover:bg-[var(--bg-tertiary)] rounded transition-colors">
+                  <X className="w-5 h-5 text-[var(--text-secondary)]" />
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-4 mb-6">
+              <div className="bg-[var(--bg-tertiary)] rounded-lg p-3 text-center">
+                <p className="text-xs text-[var(--text-tertiary)]">Total Packages</p>
+                <p className="text-xl font-bold text-[var(--text-primary)]">{selectedManifest.shipments.length}</p>
+              </div>
+              <div className="bg-[var(--bg-tertiary)] rounded-lg p-3 text-center">
+                <p className="text-xs text-[var(--text-tertiary)]">Total Weight</p>
+                <p className="text-xl font-bold text-[var(--text-primary)]">{selectedManifest.totalWeight != null ? `${fmtNumber(selectedManifest.totalWeight, 1)} lbs` : '—'}</p>
+              </div>
+              <div className="bg-[var(--bg-tertiary)] rounded-lg p-3 text-center">
+                <p className="text-xs text-[var(--text-tertiary)]">Total Cost</p>
+                <p className="text-xl font-bold text-[var(--text-primary)]">{selectedManifest.totalCost != null ? fmtMoney(selectedManifest.totalCost) : '—'}</p>
+              </div>
+            </div>
+
+            {selectedManifest.bolNumber && (
+              <div className="mb-4 p-3 bg-[var(--nexus-primary-50)] dark:bg-[var(--nexus-primary-900)]/10 rounded-lg border border-[var(--nexus-primary-200)] dark:border-[var(--nexus-primary-800)]">
+                <p className="text-xs text-[var(--text-tertiary)]">BOL Number</p>
+                <p className="text-sm font-mono font-semibold text-[var(--nexus-primary-700)] dark:text-[var(--nexus-primary-400)]">{selectedManifest.bolNumber}</p>
+              </div>
+            )}
+
+            <h4 className="text-sm font-semibold text-[var(--text-primary)] mb-3">Shipments</h4>
+            <div className="overflow-x-auto border border-[var(--border-color)] rounded-lg">
+              <table className="enterprise-table w-full text-sm">
+                <thead>
+                  <tr>
+                    <th className="px-3 py-2 text-left text-xs font-semibold text-[var(--text-secondary)] uppercase">Order</th>
+                    <th className="px-3 py-2 text-left text-xs font-semibold text-[var(--text-secondary)] uppercase">Tracking</th>
+                    <th className="px-3 py-2 text-left text-xs font-semibold text-[var(--text-secondary)] uppercase">Service</th>
+                    <th className="px-3 py-2 text-right text-xs font-semibold text-[var(--text-secondary)] uppercase">Weight</th>
+                    <th className="px-3 py-2 text-right text-xs font-semibold text-[var(--text-secondary)] uppercase">Cost</th>
+                    <th className="px-3 py-2 text-left text-xs font-semibold text-[var(--text-secondary)] uppercase">Destination</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--border-subtle)]">
+                  {selectedManifest.shipments.map(s => (
+                    <tr key={s.id} className="enterprise-table-row">
+                      <td className="px-3 py-2 font-medium text-[var(--text-primary)]">{s.orderId}</td>
+                      <td className="px-3 py-2 font-mono text-xs text-[var(--color-primary)]">{s.tracking || '—'}</td>
+                      <td className="px-3 py-2 text-[var(--text-secondary)]">{s.service || '—'}</td>
+                      <td className="px-3 py-2 text-right text-[var(--text-secondary)]">{s.weight != null ? `${s.weight} lbs` : '—'}</td>
+                      <td className="px-3 py-2 text-right font-mono text-[var(--text-primary)]">{s.cost != null ? fmtMoney(s.cost) : '—'}</td>
+                      <td className="px-3 py-2 text-[var(--text-secondary)]">{s.destination || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="flex justify-end gap-3 mt-6">
+              <button type="button" onClick={() => setShowDetail(false)}
+                className="enterprise-btn enterprise-btn-secondary">Close</button>
+              {selectedManifest.status === 'Draft' && (
+                <PermissionGate resource="logistics" action="edit">
+                  <button type="button" onClick={handleCloseManifest}
+                    className="enterprise-btn enterprise-btn-primary">
+                    <CheckCircle className="w-4 h-4" /> Close Manifest
+                  </button>
+                </PermissionGate>
+              )}
+              {selectedManifest.status !== 'Submitted' && (
+                <PermissionGate resource="logistics" action="edit">
+                  <button type="button" onClick={handleSubmitFromDetail}
+                    className="bg-[var(--nexus-primary-600)] text-white px-4 py-2 rounded-lg hover:bg-[var(--nexus-primary-700)] transition-colors inline-flex items-center gap-2 text-sm font-medium">
+                    <Send className="w-4 h-4" /> Submit Manifest
+                  </button>
+                </PermissionGate>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}

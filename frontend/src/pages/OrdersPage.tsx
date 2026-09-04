@@ -1,0 +1,358 @@
+import { useState, useMemo } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Download, Printer, XCircle, Ship, RotateCcw, Loader2, Plus, X,
+  ShoppingCart, Clock, CheckCircle, Truck, AlertTriangle,
+} from 'lucide-react'
+import DataTable, { Column } from '../components/common/DataTable'
+import EnterpriseBreadcrumbs from '../components/enterprise/EnterpriseBreadcrumbs'
+import EnterpriseToolbar from '../components/enterprise/EnterpriseToolbar'
+import EnterpriseKPICard from '../components/enterprise/EnterpriseKPICard'
+import EnterpriseStatusBadge from '../components/enterprise/EnterpriseStatusBadge'
+import EnterpriseTabs from '../components/enterprise/EnterpriseTabs'
+import { Order, ApiResponse } from '../types'
+import { PermissionGate } from '../components/rbac'
+import { useToast } from '../hooks/useToast'
+import * as ordersApi from '../api/orders'
+
+const STATUS_ORDER = ['PENDING', 'CONFIRMED', 'ALLOCATED', 'SHIPPED', 'DELIVERED', 'EXCEPTION', 'CANCELLED']
+
+export default function OrdersPage() {
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const { addToast } = useToast()
+  const [search, setSearch] = useState('')
+  const [activeTab, setActiveTab] = useState('ALL')
+  const [channelFilter, setChannelFilter] = useState<string>('ALL')
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [sortBy, setSortBy] = useState<string>('createdAt')
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
+  const [page, setPage] = useState(1)
+  const [showCreate, setShowCreate] = useState(false)
+  const [createForm, setCreateForm] = useState({
+    customerName: '', customerEmail: '',
+    street: '', city: '', state: '', zip: '', country: 'US',
+    channel: 'MANUAL', sku: '', productName: '', quantity: 1, unitPrice: 0,
+  })
+  const pageSize = 15
+
+  const createMutation = useMutation({
+    mutationFn: () => ordersApi.createOrder({
+      customerName: createForm.customerName,
+      customerEmail: createForm.customerEmail,
+      shippingAddress: {
+        street: createForm.street, city: createForm.city,
+        state: createForm.state, zip: createForm.zip, country: createForm.country,
+      },
+      channel: createForm.channel,
+      items: [{
+        sku: createForm.sku, productName: createForm.productName,
+        quantity: createForm.quantity, unitPrice: createForm.unitPrice,
+      }],
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['orders'] })
+      addToast({ type: 'success', title: 'Order created' })
+      setShowCreate(false)
+    },
+    onError: () => addToast({ type: 'error', title: 'Failed to create order' }),
+  })
+
+  const { data: orders = [], isLoading } = useQuery({
+    queryKey: ['orders', activeTab, search],
+    queryFn: async () => {
+      // Backend caps page size at 2000 — fetch ALL pages so every order is visible
+      const baseParams: Record<string, string> = {}
+      if (activeTab !== 'ALL') baseParams.status = activeTab
+      if (search) baseParams.search = search
+      baseParams.sort = 'createdAt,desc'
+      const PAGE_SIZE = 2000
+      const all: Order[] = []
+      let p = 0
+      for (;;) {
+        const res: ApiResponse<Order[]> = await ordersApi.getOrders({ ...baseParams, page: String(p), size: String(PAGE_SIZE) } as any)
+        const d = res.data
+        const content = Array.isArray(d)
+          ? d
+          : d && typeof d === 'object' && 'content' in d
+            ? (d as { content: Order[] }).content
+            : []
+        const totalElements = !Array.isArray(d) && d && typeof d === 'object' && 'totalElements' in d
+          ? Number((d as { totalElements: number }).totalElements)
+          : null
+        all.push(...content)
+        if (Array.isArray(d) || content.length === 0 || (totalElements !== null && all.length >= totalElements)) break
+        p++
+      }
+      return all
+    },
+  })
+
+  const filtered = useMemo(() => {
+    let result = [...orders]
+    if (channelFilter !== 'ALL') result = result.filter((o) => o.channel === channelFilter)
+    result.sort((a, b) => {
+      const aVal = String(a[sortBy as keyof Order] ?? '')
+      const bVal = String(b[sortBy as keyof Order] ?? '')
+      return sortOrder === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal)
+    })
+    return result
+  }, [orders, channelFilter, sortBy, sortOrder])
+
+  const totalPages = Math.ceil(filtered.length / pageSize)
+  const paged = filtered.slice((page - 1) * pageSize, page * pageSize)
+
+  function handleSort(key: string) {
+    if (sortBy === key) setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')
+    else { setSortBy(key); setSortOrder('asc') }
+  }
+
+  const cancelMutation = useMutation({
+    mutationFn: (id: string) => ordersApi.cancelOrder(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['orders'] })
+      addToast({ type: 'success', title: 'Order cancelled' })
+    },
+    onError: () => addToast({ type: 'error', title: 'Failed to cancel order' }),
+  })
+
+  const statusCounts = useMemo(() => {
+    const counts: Record<string, number> = { ALL: orders.length }
+    STATUS_ORDER.forEach(s => counts[s] = orders.filter(o => o.status === s).length)
+    return counts
+  }, [orders])
+
+  const tabs = [
+    { id: 'ALL', label: 'All Orders', icon: <ShoppingCart className="w-4 h-4" />, badge: statusCounts.ALL },
+    ...STATUS_ORDER.filter(s => s !== 'CANCELLED').map(s => ({
+      id: s,
+      label: s.charAt(0) + s.slice(1).toLowerCase(),
+      icon: s === 'PENDING' ? <Clock className="w-4 h-4" /> : s === 'SHIPPED' || s === 'DELIVERED' ? <Truck className="w-4 h-4" /> : s === 'EXCEPTION' ? <AlertTriangle className="w-4 h-4" /> : <CheckCircle className="w-4 h-4" />,
+      badge: statusCounts[s],
+    })),
+  ]
+
+  const columns: Column<Order>[] = [
+    { key: 'orderNumber', header: 'Order ID', sortable: true, render: (o) => {
+      const external = o.channelOrderId || o.orderNumber
+      return (
+        <div className="leading-tight">
+          <span className="font-medium text-[var(--text-brand)]">{external || o.id}</span>
+          {external && <span className="block text-[11px] text-[var(--text-tertiary)]">Nexus: {o.id.slice(0, 8)}</span>}
+        </div>
+      )
+    } },
+    { key: 'channel', header: 'Channel', sortable: true, render: (o) => <span className="text-xs font-medium text-[var(--text-secondary)] uppercase">{o.channel}</span> },
+    { key: 'customerName', header: 'Customer', sortable: true },
+    { key: 'status', header: 'Status', sortable: true, render: (o) => <EnterpriseStatusBadge status={o.status.toLowerCase()} /> },
+    { key: 'items', header: 'Items', render: (o) => <span className="text-[var(--text-secondary)]">{o.items?.reduce((s, i) => s + i.quantity, 0) || 0} units</span> },
+    { key: 'shippingAddress', header: 'Destination', render: (o) => o.shippingAddress ? <span className="text-[var(--text-secondary)]">{o.shippingAddress.city}, {o.shippingAddress.state}</span> : <span className="text-[var(--text-tertiary)]">—</span> },
+    { key: 'carrier', header: 'Carrier', render: (o) => o.carrier ? <span className="text-[var(--text-secondary)]">{o.carrier}</span> : <span className="text-[var(--text-tertiary)]">—</span> },
+    { key: 'promisedDeliveryDate', header: 'Promised Delivery', sortable: true, render: (o) => o.promisedDeliveryDate ? <span className="text-[var(--text-secondary)] text-xs">{new Date(o.promisedDeliveryDate).toLocaleDateString()}</span> : <span className="text-[var(--text-tertiary)]">—</span> },
+    { key: 'hasException', header: '', render: (o) => o.hasException ? <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-[var(--nexus-error-50)] text-[var(--nexus-error-600)] text-xs font-bold">!</span> : null },
+  ]
+
+  return (
+    <div className="space-y-4">
+      <EnterpriseBreadcrumbs crumbs={[{ label: 'Orders' }]} />
+
+      <div className="grid grid-cols-4 gap-4">
+        <EnterpriseKPICard title="Total Orders" value={orders.length} icon={<ShoppingCart className="w-5 h-5" />} color="primary" />
+        <EnterpriseKPICard title="Pending" value={statusCounts.PENDING || 0} icon={<Clock className="w-5 h-5" />} color="amber" />
+        <EnterpriseKPICard title="Shipped" value={statusCounts.SHIPPED || 0} icon={<Truck className="w-5 h-5" />} color="blue" />
+        <EnterpriseKPICard title="Exceptions" value={statusCounts.EXCEPTION || 0} icon={<AlertTriangle className="w-5 h-5" />} color="red" />
+      </div>
+
+      <EnterpriseTabs tabs={tabs} activeTab={activeTab} onChange={(id) => { setActiveTab(id); setPage(1) }} />
+
+      <EnterpriseToolbar
+        searchValue={search}
+        onSearch={(v) => { setSearch(v); setPage(1) }}
+        searchPlaceholder="Search orders..."
+        autocomplete={{
+          fetchSuggestions: async (q) => {
+            const res: ApiResponse<Order[]> = await ordersApi.getOrders({ search: q, size: '10' })
+            return Array.isArray(res.data) ? res.data : []
+          },
+          onSelect: (item: Order) => navigate(`/orders/${item.id}`),
+          getOptionLabel: (item: Order) => `${item.channelOrderId || item.orderNumber || item.id} — ${item.customerName || ''}`,
+          getOptionValue: (item: Order) => item.id,
+          minChars: 2,
+        }}
+        filters={
+          <select className="enterprise-input w-40" value={channelFilter} onChange={(e) => { setChannelFilter(e.target.value); setPage(1) }}>
+            <option value="ALL">All Channels</option>
+            <option value="SHOPIFY">Shopify</option>
+            <option value="AMAZON">Amazon</option>
+            <option value="WOOCOMMERCE">WooCommerce</option>
+            <option value="MANUAL">Manual</option>
+            <option value="API">API</option>
+          </select>
+        }
+        actions={[
+          { label: 'Export', icon: <Download className="w-4 h-4" />, onClick: () => {
+            const headers = ['Order Number', 'Channel', 'Customer', 'Status', 'Items', 'City', 'State', 'Carrier', 'Created']
+            const rows = filtered.map(o => [
+              o.channelOrderId || o.orderNumber || o.id,
+              o.channel,
+              o.customerName || '',
+              o.status,
+              String(o.items?.reduce((s, i) => s + i.quantity, 0) || 0),
+              o.shippingAddress?.city || '',
+              o.shippingAddress?.state || '',
+              o.carrier || '',
+              new Date(o.createdAt).toLocaleDateString(),
+            ])
+            const csv = [headers, ...rows].map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n')
+            const blob = new Blob([csv], { type: 'text/csv' })
+            const url = URL.createObjectURL(blob)
+            const a = document.createElement('a')
+            a.href = url; a.download = `orders-${new Date().toISOString().split('T')[0]}.csv`; a.click()
+            URL.revokeObjectURL(url)
+            addToast({ type: 'success', title: `Exported ${filtered.length} orders` })
+          }},
+          { label: 'New Order', icon: <Plus className="w-4 h-4" />, onClick: () => setShowCreate(true), variant: 'primary', permission: { resource: 'orders', action: 'create' } },
+        ]}
+      />
+
+      {selectedIds.length > 0 && (
+        <div className="flex items-center gap-2 px-4 py-2 bg-[var(--interactive-selected)] rounded-lg border border-[var(--nexus-primary-200)]">
+          <span className="text-sm text-[var(--nexus-primary-700)] font-medium">{selectedIds.length} selected</span>
+          <div className="w-px h-4 bg-[var(--nexus-primary-200)]" />
+          <button type="button" className="enterprise-btn enterprise-btn-ghost text-xs text-[var(--text-brand)]" onClick={() => {
+            const ready = selectedIds.filter(id => orders.find(o => o.id === id)?.status === 'ALLOCATED')
+            ready.forEach(id => ordersApi.shipOrder(id, 'auto', 'TN-BATCH-' + Date.now()))
+            addToast({ type: 'success', title: `Shipment booked for ${ready.length} orders` })
+            setTimeout(() => queryClient.invalidateQueries({ queryKey: ['orders'] }), 1000)
+          }}><Ship className="w-3.5 h-3.5" /> Book Shipment</button>
+          <button type="button" className="enterprise-btn enterprise-btn-ghost text-xs text-[var(--text-brand)]" onClick={() => {
+            const tnList = selectedIds.map(id => {
+              const o = orders.find(o2 => o2.id === id)
+              return `${o?.orderNumber || id}: ${o?.trackingNumber || 'N/A'}`
+            }).join('\n')
+            const win = window.open('', '_blank')
+            if (win) {
+              win.document.write(`<html><head><title>Labels</title><style>body{font-family:monospace;padding:20px}pre{margin:0 0 20px;border:1px dashed #ccc;padding:10px}</style></head><body>${tnList.map(t => `<pre>${t}</pre>`).join('')}</body></html>`)
+              win.document.close()
+            }
+            addToast({ type: 'success', title: `${selectedIds.length} label(s) opened` })
+          }}><Printer className="w-3.5 h-3.5" /> Print Labels</button>
+          <button type="button" className="enterprise-btn enterprise-btn-ghost text-xs text-[var(--text-brand)]" onClick={() => {
+            selectedIds.forEach(id => ordersApi.allocateOrder(id))
+            addToast({ type: 'success', title: `Reallocating ${selectedIds.length} orders` })
+            setTimeout(() => queryClient.invalidateQueries({ queryKey: ['orders'] }), 1000)
+          }}><RotateCcw className="w-3.5 h-3.5" /> Reassign</button>
+          <PermissionGate resource="orders" action="delete">
+            <button type="button" className="enterprise-btn enterprise-btn-ghost text-xs text-[var(--nexus-error-600)]" onClick={() => { selectedIds.forEach(id => cancelMutation.mutate(id)) }}>
+              {cancelMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <XCircle className="w-3.5 h-3.5" />}
+              Cancel
+            </button>
+          </PermissionGate>
+        </div>
+      )}
+
+      <div className="enterprise-card overflow-hidden">
+        {isLoading ? (
+          <div className="flex items-center justify-center p-12">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[var(--nexus-primary-600)]" />
+          </div>
+        ) : (
+          <DataTable
+            columns={columns}
+            data={paged}
+            keyExtractor={(o) => o.id}
+            sortBy={sortBy}
+            sortOrder={sortOrder}
+            onSort={handleSort}
+            selectedIds={selectedIds}
+            onSelectionChange={setSelectedIds}
+            onRowClick={(o) => navigate(`/orders/${o.id}`)}
+            pagination={{ page, totalPages, total: filtered.length, onPageChange: setPage }}
+          />
+        )}
+      </div>
+
+      {showCreate && (
+        <div className="enterprise-modal-overlay" onClick={() => setShowCreate(false)}>
+          <div className="enterprise-modal w-full max-w-lg" onClick={e => e.stopPropagation()}>
+            <div className="enterprise-modal-header">
+              <h2>Create Order</h2>
+              <button type="button" onClick={() => setShowCreate(false)} className="p-1.5 hover:bg-[var(--interactive-hover)] rounded-lg transition-colors"><X className="w-5 h-5 text-[var(--text-tertiary)]" /></button>
+            </div>
+            <form className="enterprise-modal-body space-y-4" onSubmit={(e) => { e.preventDefault(); createMutation.mutate() }}>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="col-span-2">
+                  <label className="text-xs font-medium text-[var(--text-secondary)] mb-1 block">Customer Name</label>
+                  <input className="enterprise-input w-full" value={createForm.customerName} onChange={e => setCreateForm(f => ({ ...f, customerName: e.target.value }))} />
+                </div>
+                <div className="col-span-2">
+                  <label className="text-xs font-medium text-[var(--text-secondary)] mb-1 block">Customer Email</label>
+                  <input className="enterprise-input w-full" type="email" value={createForm.customerEmail} onChange={e => setCreateForm(f => ({ ...f, customerEmail: e.target.value }))} />
+                </div>
+                <div className="col-span-2">
+                  <label className="text-xs font-medium text-[var(--text-secondary)] mb-1 block">Street</label>
+                  <input className="enterprise-input w-full" value={createForm.street} onChange={e => setCreateForm(f => ({ ...f, street: e.target.value }))} />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-[var(--text-secondary)] mb-1 block">City</label>
+                  <input className="enterprise-input w-full" value={createForm.city} onChange={e => setCreateForm(f => ({ ...f, city: e.target.value }))} />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-[var(--text-secondary)] mb-1 block">State</label>
+                  <input className="enterprise-input w-full" value={createForm.state} onChange={e => setCreateForm(f => ({ ...f, state: e.target.value }))} />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-[var(--text-secondary)] mb-1 block">ZIP</label>
+                  <input className="enterprise-input w-full" value={createForm.zip} onChange={e => setCreateForm(f => ({ ...f, zip: e.target.value }))} />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-[var(--text-secondary)] mb-1 block">Country</label>
+                  <input className="enterprise-input w-full" value={createForm.country} onChange={e => setCreateForm(f => ({ ...f, country: e.target.value }))} />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-[var(--text-secondary)] mb-1 block">Channel</label>
+                  <select className="enterprise-input w-full" value={createForm.channel} onChange={e => setCreateForm(f => ({ ...f, channel: e.target.value }))}>
+                    <option value="MANUAL">Manual</option>
+                    <option value="SHOPIFY">Shopify</option>
+                    <option value="AMAZON">Amazon</option>
+                    <option value="WOOCOMMERCE">WooCommerce</option>
+                    <option value="API">API</option>
+                  </select>
+                </div>
+              </div>
+              <hr className="border-[var(--border-default)]" />
+              <p className="text-sm font-medium text-[var(--text-secondary)]">Item</p>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="col-span-2">
+                  <label className="text-xs font-medium text-[var(--text-secondary)] mb-1 block">Product Name</label>
+                  <input className="enterprise-input w-full" value={createForm.productName} onChange={e => setCreateForm(f => ({ ...f, productName: e.target.value }))} />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-[var(--text-secondary)] mb-1 block">SKU</label>
+                  <input className="enterprise-input w-full" value={createForm.sku} onChange={e => setCreateForm(f => ({ ...f, sku: e.target.value }))} />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-[var(--text-secondary)] mb-1 block">Qty</label>
+                  <input className="enterprise-input w-full" type="number" min={1} value={createForm.quantity} onChange={e => setCreateForm(f => ({ ...f, quantity: Number(e.target.value) }))} />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-[var(--text-secondary)] mb-1 block">Unit Price</label>
+                  <input className="enterprise-input w-full" type="number" min={0} step={0.01} value={createForm.unitPrice} onChange={e => setCreateForm(f => ({ ...f, unitPrice: Number(e.target.value) }))} />
+                </div>
+              </div>
+            </form>
+            <div className="enterprise-modal-footer bg-[var(--surface-muted)]">
+              <button type="button" className="enterprise-btn enterprise-btn-secondary" onClick={() => setShowCreate(false)}>Cancel</button>
+              <PermissionGate resource="orders" action="create">
+                <button type="submit" className="enterprise-btn enterprise-btn-primary" onClick={() => createMutation.mutate()} disabled={createMutation.isPending}>
+                  {createMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                  {createMutation.isPending ? 'Creating...' : 'Create Order'}
+                </button>
+              </PermissionGate>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}

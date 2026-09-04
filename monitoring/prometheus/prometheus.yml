@@ -1,0 +1,53 @@
+# =============================================================================
+# Nexus OMS — Prometheus configuration
+# =============================================================================
+#
+# NOTE ON SCRAPE TARGETS:
+# The backend protects /actuator/** with the ADMIN role (see SecurityConfig),
+# so /actuator/prometheus requires a JWT and cannot be scraped anonymously.
+# Kafka, Redis and Postgres expose raw TCP ports, not HTTP scrape endpoints,
+# and require dedicated exporters (kafka-exporter, redis-exporter,
+# postgres-exporter) to be scraped.
+#
+# To enable full metrics:
+#   1. Add the relevant exporters as services in docker-compose.yml, OR
+#   2. Expose the backend prometheus endpoint to an internal network.
+#
+# The targets below are intentionally limited to what is reachable out of the
+# box. Prometheus and Grafana still run as a ready platform; add exporters to
+# populate dashboards.
+# =============================================================================
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+rule_files:
+  - "alerts.yml"
+
+scrape_configs:
+  # Backend metrics require ADMIN auth (JWT) — see note above.
+  # Uncomment and add a bearer token if you expose the endpoint internally.
+  # - job_name: 'nexus-oms-backend'
+  #   metrics_path: '/api/v1/actuator/prometheus'
+  #   static_configs:
+  #     - targets: ['backend:8080']
+  #       labels:
+  #         application: 'nexus-oms'
+  #         environment: 'production'
+
+  # Kafka / Redis / Postgres require dedicated exporters — see note above.
+  # - job_name: 'kafka'
+  #   static_configs:
+  #     - targets: ['kafka-exporter:9308']
+  # - job_name: 'redis'
+  #   static_configs:
+  #     - targets: ['redis-exporter:9121']
+  # - job_name: 'postgres'
+  #   static_configs:
+  #     - targets: ['postgres-exporter:9187']

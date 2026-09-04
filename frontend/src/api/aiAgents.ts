@@ -1,0 +1,256 @@
+import client from './client'
+import { ApiResponse } from '../types'
+
+export interface AiModel {
+  id: string
+  name: string
+  description: string
+  version: string
+  category: string
+  status: string
+  accuracy: number | null
+  latencyMs: number | null
+  lastTrained: string | null
+  tenantId: string
+  isGlobal: boolean
+}
+
+export interface AiAgent {
+  id: string
+  name: string
+  description: string
+  status: string
+  accuracy: number
+  decisions24h: number
+  model: string
+  modelVersion: string
+  category?: string
+}
+
+export interface AiRecommendation {
+  id: string
+  title: string
+  description: string
+  impact: string
+  confidence: number
+  type?: string
+  status: string
+  suggestedAction?: string
+  reasoning?: string[]
+  agentName?: string
+}
+
+export interface AiPackagingPlan {
+  boxType: string
+  dimensions: string
+  weight: number
+  fillRate: number
+  materials: string[]
+  confidence: number
+}
+
+export interface AiLoadingStep {
+  step: number
+  boxId: string
+  position: string
+  itemCount: number
+  weight: number
+  fragile: boolean
+}
+
+export interface AiWeightDistribution {
+  front: number
+  center: number
+  rear: number
+}
+
+export interface AiLoadingCheck {
+  label: string
+  passed: boolean
+}
+
+export interface AiLoadingPlan {
+  id: string
+  type: string
+  status: string
+  departure?: string
+  sequence: AiLoadingStep[]
+  weightDistribution: AiWeightDistribution
+  checks: AiLoadingCheck[]
+  totalWeight: number
+  stops?: number
+}
+
+export interface AiBriefing {
+  revenue: { today: number; yesterday: number }
+  orders: { today: number; pending: number; late: number }
+  profit: { today: number; margin: number }
+  inventory: { total: number; lowStock: number; deadStock: number }
+  insights: { type: string; icon: string; text: string }[]
+  risks: { title: string; description: string; severity: string; probability: number }[]
+  opportunities: { title: string; potential: string; action: string }[]
+  recommendations: AiRecommendation[]
+  forecast: { month: string; revenue: number }[]
+}
+
+export interface AiForecast {
+  metric: string
+  current: number
+  unit: string
+  predicted: number[]
+  period: string
+  confidence: number
+}
+
+export interface AiSupplierRisk {
+  supplierName: string
+  riskScore: number
+  delayProbability: number
+  qualityScore: number
+  onTimeRate: number
+  trend: string
+  recommendation: string
+}
+
+const WRAPPER_KEYS = ['success', 'data', 'message', 'error', 'errors', 'pagination']
+
+/** Client normalizes every body to {success, data, message, ...}; unwrap back to the payload. */
+function unwrap<T>(body: any): T {
+  if (body && typeof body === 'object' && !Array.isArray(body) && 'data' in body) {
+    if (Object.keys(body).every(k => WRAPPER_KEYS.includes(k))) return body.data
+  }
+  return body
+}
+
+export async function getAgents(): Promise<ApiResponse<AiAgent[]>> {
+  try {
+    const { data } = await client.get('/ai/routing')
+    const agents: AiAgent[] = unwrap(data)?.agents ?? []
+    return { success: true, data: agents }
+  } catch (err: any) {
+    const msg = err?.response?.data?.message || err?.message || 'Failed to get AI agents'
+    return { success: false, error: msg } as any
+  }
+}
+
+export async function getAgent(id: string): Promise<ApiResponse<AiAgent | undefined>> {
+  try {
+    const { data } = await client.get('/ai/routing')
+    const agent = (unwrap(data)?.agents ?? []).find((a: AiAgent) => a.name === id || a.name.toLowerCase().replace(/\s+/g, '-') === id)
+    return { success: true, data: agent }
+  } catch (err: any) {
+    const msg = err?.response?.data?.message || err?.message || 'Failed to get agent'
+    return { success: false, error: msg } as any
+  }
+}
+
+export async function getRecommendations(limit?: number): Promise<ApiResponse<AiRecommendation[]>> {
+  try {
+    const { data } = await client.get('/ai/briefing')
+    const recs: AiRecommendation[] = unwrap(data)?.recommendations ?? []
+    const sliced = limit ? recs.slice(0, limit) : recs
+    return { success: true, data: sliced }
+  } catch (err: any) {
+    const msg = err?.response?.data?.message || err?.message || 'Failed to get recommendations'
+    return { success: false, error: msg } as any
+  }
+}
+
+export async function approveRecommendation(id: string): Promise<ApiResponse<any>> {
+  try {
+    const { data } = await client.post(`/ai/recommendations/${id}/respond`, { action: 'approved' })
+    return data
+  } catch (err: any) {
+    const msg = err?.response?.data?.message || err?.message || 'Failed to approve recommendation'
+    return { success: false, error: msg } as any
+  }
+}
+
+export async function rejectRecommendation(id: string): Promise<ApiResponse<any>> {
+  try {
+    const { data } = await client.post(`/ai/recommendations/${id}/respond`, { action: 'rejected' })
+    return data
+  } catch (err: any) {
+    const msg = err?.response?.data?.message || err?.message || 'Failed to reject recommendation'
+    return { success: false, error: msg } as any
+  }
+}
+
+export async function getPackagingPlan(orderId: string): Promise<ApiResponse<AiPackagingPlan | undefined>> {
+  try {
+    const { data } = await client.get('/ai/packing')
+    const orderPlan = (unwrap(data)?.orders ?? []).find((o: any) => o.orderId === orderId)
+    return { success: true, data: orderPlan?.aiBoxPlan ?? orderPlan }
+  } catch (err: any) {
+    const msg = err?.response?.data?.message || err?.message || 'Failed to get packaging plan'
+    return { success: false, error: msg } as any
+  }
+}
+
+export async function getLoadingPlan(truckId: string): Promise<ApiResponse<AiLoadingPlan | undefined>> {
+  try {
+    const { data } = await client.get('/ai/loading')
+    const truck = (unwrap(data)?.trucks ?? []).find((t: AiLoadingPlan) => t.id === truckId)
+    return { success: true, data: truck }
+  } catch (err: any) {
+    const msg = err?.response?.data?.message || err?.message || 'Failed to get loading plan'
+    return { success: false, error: msg } as any
+  }
+}
+
+export async function getBriefing(): Promise<ApiResponse<AiBriefing>> {
+  try {
+    const { data } = await client.get('/ai/briefing')
+    return { success: true, data: unwrap<AiBriefing>(data) }
+  } catch (err: any) {
+    const msg = err?.response?.data?.message || err?.message || 'Failed to get briefing'
+    return { success: false, error: msg } as any
+  }
+}
+
+export async function getForecasts(): Promise<ApiResponse<AiForecast[]>> {
+  try {
+    const { data } = await client.get('/ai/forecasting')
+    const demand: AiForecast[] = unwrap(data)?.demand ?? []
+    return { success: true, data: demand }
+  } catch (err: any) {
+    const msg = err?.response?.data?.message || err?.message || 'Failed to get forecasts'
+    return { success: false, error: msg } as any
+  }
+}
+
+export async function getSupplierRisks(): Promise<ApiResponse<AiSupplierRisk[]>> {
+  try {
+    const { data } = await client.get('/ai/forecasting')
+    const risks: AiSupplierRisk[] = unwrap(data)?.supplierRisk ?? []
+    return { success: true, data: risks }
+  } catch (err: any) {
+    const msg = err?.response?.data?.message || err?.message || 'Failed to get supplier risks'
+    return { success: false, error: msg } as any
+  }
+}
+
+export interface RoutingQueueItem {
+  id: string
+  orderNumber: string
+  customer: string
+  items: number
+  value: number
+  slaRemaining: string
+  aiDecision: string
+  confidence: number
+  agentName: string
+  agentId?: string
+}
+
+export async function getRoutingQueue(limit?: number): Promise<ApiResponse<RoutingQueueItem[]>> {
+  try {
+    const { data } = await client.get('/ai/routing/queue')
+    const queue: RoutingQueueItem[] = unwrap(data)?.queue ?? []
+    const sliced = limit ? queue.slice(0, limit) : queue
+    return { success: true, data: sliced }
+  } catch (err: any) {
+    const msg = err?.response?.data?.message || err?.message || 'Failed to get routing queue'
+    return { success: false, error: msg } as any
+  }
+}

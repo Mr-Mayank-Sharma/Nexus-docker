@@ -1,0 +1,19 @@
+{
+  "wape": 1.000755,
+  "mase": 0.500377,
+  "baseline_wape": 2.0,
+  "backtest": {
+    "method": "rolling_origin",
+    "folds": 5,
+    "horizon_periods": 7,
+    "seasonal_shift": 7,
+    "grain": "daily"
+  },
+  "data": {
+    "source": "selftest-csv",
+    "skus": 1,
+    "feature_rows": 526,
+    "periods": 526
+  },
+  "trained_at": "2026-08-25T15:46:06.314958Z"
+}

@@ -1,0 +1,18 @@
+[
+  "lag_1",
+  "lag_2",
+  "lag_3",
+  "lag_4",
+  "lag_5",
+  "lag_6",
+  "lag_7",
+  "roll_mean_7",
+  "roll_std_7",
+  "sku_mean",
+  "sku_code",
+  "dow",
+  "month",
+  "dom",
+  "weekend",
+  "is_festive"
+]

@@ -1,0 +1,634 @@
+import PermissionGate from '../components/rbac/PermissionGate'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { clsx } from 'clsx'
+import {
+  Download, Upload, RefreshCw, XCircle, CheckCircle, AlertTriangle,
+  FileText, BarChart3, Activity, Database, Play, Trash2, Eye, X, Loader2,
+  FileUp, FileCode, FileSpreadsheet, Table, FileType,
+} from 'lucide-react'
+import {
+  EnterpriseToolbar, EnterpriseTabs, EnterpriseDataGrid, EnterpriseKPICard,
+  EnterpriseBreadcrumbs, EnterpriseStatusBadge, EnterpriseFormSection,
+} from '../components/enterprise'
+import type { Column, Tab } from '../components/enterprise'
+import * as integrationApi from '../api/integrationPlatform'
+import * as importApi from '../api/importApi'
+import type { ImportResult, ImportFormat } from '../api/importApi'
+import { downloadSampleData } from '../api/importApi'
+import { useToast } from '../hooks/useToast'
+import Autocomplete from '../components/common/Autocomplete'
+
+const FORMAT_ICONS: Record<string, any> = {
+  csv: Table,
+  json: FileCode,
+  xml: FileType,
+  edi: FileSpreadsheet,
+  xlsx: FileSpreadsheet,
+}
+
+export default function ImportExportCenter() {
+  const [activeTab, setActiveTab] = useState('import')
+  const [showModal, setShowModal] = useState(false)
+  const [modalType, setModalType] = useState<'import' | 'export'>('import')
+  const [formData, setFormData] = useState({ jobName: '', sourceOrType: '', format: '', configuration: '', schedule: '' })
+  const [processing, setProcessing] = useState(false)
+  const [importJobs, setImportJobs] = useState<integrationApi.IntegrationImportJob[]>([])
+  const [exportJobs, setExportJobs] = useState<integrationApi.IntegrationExportJob[]>([])
+  const [dlqEntries, setDlqEntries] = useState<integrationApi.IntegrationDLQ[]>([])
+  const [endpoints, setEndpoints] = useState<integrationApi.IntegrationEndpoint[]>([])
+  const [stats, setStats] = useState<Record<string, any> | null>(null)
+  const [loading, setLoading] = useState(true)
+  const { addToast } = useToast()
+
+  const [importFileOpen, setImportFileOpen] = useState(false)
+  const [importEntityType, setImportEntityType] = useState('products')
+  const [importFormat, setImportFormat] = useState('csv')
+  const [importFile, setImportFile] = useState<File | null>(null)
+  const [importProcessing, setImportProcessing] = useState(false)
+  const [importResult, setImportResult] = useState<ImportResult | null>(null)
+  const [entityTypes, setEntityTypes] = useState<string[]>([])
+  const [formats, setFormats] = useState<ImportFormat[]>([])
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const fetchData = useCallback(async () => {
+    try {
+      const [importRes, exportRes, dlqRes, endpointRes, statsRes] = await Promise.all([
+        integrationApi.getImportJobs({ size: 50 }).catch(() => ({ data: [] })),
+        integrationApi.getExportJobs({ size: 50 }).catch(() => ({ data: [] })),
+        integrationApi.getDLQEntries({ size: 50 }).catch(() => ({ data: [] })),
+        integrationApi.getEndpoints().catch(() => ({ data: [] })),
+        integrationApi.getDashboardStats().catch(() => ({ data: {} })),
+      ])
+      setImportJobs(importRes.data?.content || (Array.isArray(importRes.data) ? importRes.data : []))
+      setExportJobs(exportRes.data?.content || (Array.isArray(exportRes.data) ? exportRes.data : []))
+      setDlqEntries(dlqRes.data?.content || (Array.isArray(dlqRes.data) ? dlqRes.data : []))
+      setEndpoints(Array.isArray(endpointRes.data) ? endpointRes.data : [])
+      setStats(statsRes.data as Record<string, any>)
+    } catch {
+      addToast({ type: 'error', title: 'Failed to load import/export data' })
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const fetchMeta = useCallback(async () => {
+    try {
+      const [etRes, fmtRes] = await Promise.all([
+        importApi.getEntityTypes().catch(() => ({ data: ['products', 'orders', 'inventory', 'customers', 'shipments', 'returns', 'suppliers', 'purchase-orders', 'invoices', 'warehouses'] })),
+        importApi.getImportFormats().catch(() => ({ data: [{ id: 'csv', label: 'CSV', extensions: '.csv' }, { id: 'json', label: 'JSON', extensions: '.json' }, { id: 'xml', label: 'XML', extensions: '.xml' }, { id: 'edi', label: 'EDI X12', extensions: '.edi' }, { id: 'xlsx', label: 'Excel', extensions: '.xlsx' }] })),
+      ])
+      setEntityTypes(Array.isArray(etRes.data) ? etRes.data : [])
+      setFormats(Array.isArray(fmtRes.data) ? fmtRes.data : [])
+    } catch { addToast({ type: 'error', title: 'Failed to load import/export metadata' }) }
+  }, [])
+
+  useEffect(() => { fetchData() }, [fetchData])
+  useEffect(() => { fetchMeta() }, [fetchMeta])
+
+  const handleCreateJob = async () => {
+    if (!formData.jobName) return
+    setProcessing(true)
+    try {
+      if (modalType === 'import') {
+        await integrationApi.createImportJob({
+          jobName: formData.jobName,
+          sourceType: formData.sourceOrType,
+          targetType: 'INTERNAL',
+        })
+      } else {
+        await integrationApi.createExportJob({
+          jobName: formData.jobName,
+          exportType: formData.sourceOrType,
+          format: formData.format,
+        })
+      }
+      addToast({ type: 'success', title: `${modalType === 'import' ? 'Import' : 'Export'} job created` })
+      setShowModal(false)
+      setFormData({ jobName: '', sourceOrType: '', format: '', configuration: '', schedule: '' })
+      fetchData()
+    } catch {
+      addToast({ type: 'error', title: 'Failed to create job' })
+    } finally {
+      setProcessing(false)
+    }
+  }
+
+  const handleRetryImport = async (id: string) => {
+    try {
+      await integrationApi.retryImportJob(id)
+      addToast({ type: 'success', title: 'Import job retrying' })
+      fetchData()
+    } catch { addToast({ type: 'error', title: 'Retry failed' }) }
+  }
+
+  const handleCancelImport = async (id: string) => {
+    try {
+      await integrationApi.cancelImportJob(id)
+      addToast({ type: 'success', title: 'Import job cancelled' })
+      fetchData()
+    } catch { addToast({ type: 'error', title: 'Cancel failed' }) }
+  }
+
+  const handleRetryExport = async (id: string) => {
+    try {
+      await integrationApi.retryExportJob(id)
+      addToast({ type: 'success', title: 'Export job retrying' })
+      fetchData()
+    } catch { addToast({ type: 'error', title: 'Retry failed' }) }
+  }
+
+  const handleCancelExport = async (id: string) => {
+    try {
+      await integrationApi.cancelExportJob(id)
+      addToast({ type: 'success', title: 'Export job cancelled' })
+      fetchData()
+    } catch { addToast({ type: 'error', title: 'Cancel failed' }) }
+  }
+
+  const handleReplayDLQ = async (id: string) => {
+    try {
+      await integrationApi.replayDLQEntry(id)
+      addToast({ type: 'success', title: 'Message replayed' })
+      fetchData()
+    } catch { addToast({ type: 'error', title: 'Replay failed' }) }
+  }
+
+  const handleIgnoreDLQ = async (id: string) => {
+    try {
+      await integrationApi.ignoreDLQEntry(id)
+      addToast({ type: 'success', title: 'Message ignored' })
+      fetchData()
+    } catch { addToast({ type: 'error', title: 'Ignore failed' }) }
+  }
+
+  const handleGenerateSample = async () => {
+    setImportProcessing(true)
+    try {
+      const blob = await downloadSampleData(importEntityType, 10, importFormat)
+      const fileName = `sample_${importEntityType}_${Date.now()}.${importFormat}`
+      const file = new File([blob], fileName, { type: blob.type || 'text/csv' })
+      setImportFile(file)
+      addToast({ type: 'success', title: `Sample ${importEntityType} data generated (10 records)` })
+    } catch {
+      addToast({ type: 'error', title: 'Failed to generate sample data' })
+    } finally {
+      setImportProcessing(false)
+    }
+  }
+
+  const handleImportFile = async () => {
+    if (!importFile) return
+    setImportProcessing(true)
+    setImportResult(null)
+    try {
+      const token = await importApi.getImportToken(importEntityType)
+      const res = await importApi.importFile(importEntityType, importFile, importFormat, token || undefined)
+      if (res.success && res.data) {
+        setImportResult(res.data)
+        addToast({ type: res.data.errorCount > 0 ? 'warning' : 'success', title: `Imported ${res.data.successCount} of ${res.data.totalRecords} ${importEntityType}` })
+      } else {
+        addToast({ type: 'error', title: res.message || 'Import failed' })
+      }
+    } catch {
+      addToast({ type: 'error', title: 'Import request failed' })
+    } finally {
+      setImportProcessing(false)
+    }
+  }
+
+  const resetImportFile = () => {
+    setImportFileOpen(false)
+    setImportFile(null)
+    setImportResult(null)
+    setImportEntityType('products')
+    setImportFormat('csv')
+  }
+
+  const kpiRunning = importJobs.filter(j => j.status === 'PROCESSING' || j.status === 'VALIDATING').length +
+    exportJobs.filter(j => j.status === 'PROCESSING').length
+  const kpiCompleted = importJobs.filter(j => j.status === 'COMPLETED').length +
+    exportJobs.filter(j => j.status === 'COMPLETED').length
+  const kpiFailed = importJobs.filter(j => j.status === 'FAILED').length +
+    exportJobs.filter(j => j.status === 'FAILED').length
+
+  const tabs: Tab[] = [
+    { id: 'import', label: 'Import Jobs', icon: <Upload className="w-4 h-4" />, badge: importJobs.filter(j => ['PROCESSING', 'VALIDATING', 'PENDING'].includes(j.status)).length },
+    { id: 'export', label: 'Export Jobs', icon: <Download className="w-4 h-4" />, badge: exportJobs.filter(j => ['PROCESSING', 'PENDING'].includes(j.status)).length },
+    { id: 'dlq', label: 'Dead Letter Queue', icon: <AlertTriangle className="w-4 h-4" />, badge: dlqEntries.filter(e => e.status === 'BLOCKED').length },
+    { id: 'health', label: 'Integration Health', icon: <Activity className="w-4 h-4" /> },
+  ]
+
+const sourceOptions = ['Shopify', 'Amazon', 'BigCommerce', 'WooCommerce', 'SFTP', 'S3 Bucket', 'API Endpoint', 'SAP ERP']
+const sourceOpts = sourceOptions.map(o => ({ value: o, label: o }))
+const formatOptions = ['JSON', 'XML', 'CSV', 'EDI_X12', 'EXCEL']
+const formatOpts = formatOptions.map(f => ({ value: f, label: f }))
+const exportTypeOptions = ['Orders', 'Products', 'Inventory', 'Shipments', 'Returns', 'Customers', 'Invoices']
+const exportTypeOpts = exportTypeOptions.map(o => ({ value: o, label: o }))
+
+  const importColumns: Column<integrationApi.IntegrationImportJob>[] = [
+    { key: 'jobName', label: 'Job Name', sortable: true, minWidth: '180px' },
+    { key: 'sourceType', label: 'Source', sortable: true },
+    {
+      key: 'status', label: 'Status', sortable: true,
+      render: (val: string) => (
+        <EnterpriseStatusBadge status={
+          val === 'COMPLETED' ? 'completed' : val === 'FAILED' ? 'failed' : val === 'CANCELLED' ? 'neutral' : val === 'PROCESSING' || val === 'VALIDATING' ? 'info' : 'pending'
+        }>{val}</EnterpriseStatusBadge>
+      ),
+    },
+    {
+      key: 'recordCount', label: 'Records T/S/E', sortable: true,
+      render: (_: number, row: integrationApi.IntegrationImportJob) => (
+        <span className="text-sm">
+          <span className="font-medium">{row.recordCount?.toLocaleString() || '0'}</span>
+          {' / '}
+          <span className="text-[var(--nexus-success-600)]">{row.successCount?.toLocaleString() || '0'}</span>
+          {' / '}
+          <span className={row.errorCount > 0 ? 'text-[var(--nexus-error-500)]' : 'text-[var(--text-tertiary)]'}>{row.errorCount?.toLocaleString() || '0'}</span>
+        </span>
+      ),
+    },
+    { key: 'processingTimeMs', label: 'Processing Time', sortable: true, render: (val: number) => val ? `${(val / 1000).toFixed(1)}s` : '-' },
+    { key: 'createdAt', label: 'Started', sortable: true, minWidth: '150px', render: (val: string) => val ? new Date(val).toLocaleString() : '-' },
+    {
+      key: 'actions', label: 'Actions', width: '120px',
+      render: (_: any, row: integrationApi.IntegrationImportJob) => (
+        <div className="flex items-center gap-1">
+          <button type="button" onClick={() => addToast({ type: 'info', title: 'View details not yet implemented' })} className="enterprise-btn enterprise-btn-ghost enterprise-btn-sm p-1" title="View Details">
+            <Eye className="w-4 h-4" />
+          </button>
+          {row.status === 'FAILED' && (
+            <PermissionGate resource="import" action="edit">
+              <button type="button" onClick={() => handleRetryImport(row.id)} className="enterprise-btn enterprise-btn-ghost enterprise-btn-sm p-1 text-[var(--text-brand)]" title="Retry">
+                <RefreshCw className="w-4 h-4" />
+              </button>
+            </PermissionGate>
+          )}
+          {['PROCESSING', 'VALIDATING', 'PENDING'].includes(row.status) && (
+            <PermissionGate resource="import" action="delete">
+              <button type="button" onClick={() => handleCancelImport(row.id)} className="enterprise-btn enterprise-btn-ghost enterprise-btn-sm p-1 text-[var(--nexus-error-500)]" title="Cancel">
+                <XCircle className="w-4 h-4" />
+              </button>
+            </PermissionGate>
+          )}
+        </div>
+      ),
+    },
+  ]
+
+  const exportColumns: Column<integrationApi.IntegrationExportJob>[] = [
+    { key: 'jobName', label: 'Job Name', sortable: true, minWidth: '180px' },
+    { key: 'exportType', label: 'Export Type', sortable: true },
+    { key: 'format', label: 'Format', sortable: true },
+    {
+      key: 'status', label: 'Status', sortable: true,
+      render: (val: string) => (
+        <EnterpriseStatusBadge status={
+          val === 'COMPLETED' ? 'completed' : val === 'FAILED' ? 'failed' : val === 'CANCELLED' ? 'neutral' : val === 'PROCESSING' ? 'info' : 'pending'
+        }>{val}</EnterpriseStatusBadge>
+      ),
+    },
+    { key: 'recordCount', label: 'Records', sortable: true, render: (val: number) => val > 0 ? val.toLocaleString() : '-' },
+    { key: 'fileSize', label: 'File Size', sortable: true, render: (val: number) => val ? `${(val / 1024).toFixed(1)} KB` : '-' },
+    { key: 'createdAt', label: 'Started', sortable: true, minWidth: '150px', render: (val: string) => val ? new Date(val).toLocaleString() : '-' },
+    {
+      key: 'actions', label: 'Actions', width: '120px',
+      render: (_: any, row: integrationApi.IntegrationExportJob) => (
+        <div className="flex items-center gap-1">
+          <button type="button" onClick={() => addToast({ type: 'info', title: 'View details not yet implemented' })} className="enterprise-btn enterprise-btn-ghost enterprise-btn-sm p-1" title="View Details">
+            <Eye className="w-4 h-4" />
+          </button>
+          {row.status === 'FAILED' && (
+            <button type="button" onClick={() => handleRetryExport(row.id)} className="enterprise-btn enterprise-btn-ghost enterprise-btn-sm p-1 text-[var(--text-brand)]" title="Retry">
+              <RefreshCw className="w-4 h-4" />
+            </button>
+          )}
+          {row.status === 'PROCESSING' && (
+            <button type="button" onClick={() => handleCancelExport(row.id)} className="enterprise-btn enterprise-btn-ghost enterprise-btn-sm p-1 text-[var(--nexus-error-500)]" title="Cancel">
+              <XCircle className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+      ),
+    },
+  ]
+
+  const dlqColumns: Column<integrationApi.IntegrationDLQ>[] = [
+    { key: 'messageId', label: 'Message ID', sortable: true, render: (val: string) => <code className="text-xs font-mono">{val}</code> },
+    { key: 'flowName', label: 'Flow', sortable: true, minWidth: '160px' },
+    {
+      key: 'errorCategory', label: 'Error Category', sortable: true,
+      render: (val: string) => (
+        <EnterpriseStatusBadge status={
+          val === 'VALIDATION' || val === 'NETWORK' ? 'warning' : val === 'TIMEOUT' || val === 'AUTH' || val === 'SERVER_ERROR' ? 'error' : 'info'
+        }>{val}</EnterpriseStatusBadge>
+      ),
+    },
+    { key: 'errorMessage', label: 'Error Message', minWidth: '280px', render: (val: string) => (
+      <span className="text-sm text-[var(--text-secondary)] truncate block max-w-[280px]" title={val}>{val}</span>
+    )},
+    { key: 'retryCount', label: 'Retry Count', sortable: true, align: 'center' as const },
+    { key: 'lastRetryAt', label: 'Last Retry', sortable: true, minWidth: '140px', render: (val: string) => val ? new Date(val).toLocaleString() : '-' },
+    {
+      key: 'status', label: 'Status', sortable: true,
+      render: (val: string) => (
+        <EnterpriseStatusBadge status={val === 'BLOCKED' ? 'error' : val === 'PENDING' ? 'warning' : 'info'}>{val}</EnterpriseStatusBadge>
+      ),
+    },
+    {
+      key: 'actions', label: 'Actions', width: '100px',
+      render: (_: any, row: integrationApi.IntegrationDLQ) => (
+        <div className="flex items-center gap-1">
+          <button type="button" onClick={() => handleReplayDLQ(row.id)} className="enterprise-btn enterprise-btn-ghost enterprise-btn-sm p-1 text-[var(--text-brand)]" title="Replay">
+            <Play className="w-4 h-4" />
+          </button>
+          <button type="button" onClick={() => handleIgnoreDLQ(row.id)} className="enterprise-btn enterprise-btn-ghost enterprise-btn-sm p-1 text-[var(--nexus-error-500)]" title="Ignore">
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </div>
+      ),
+    },
+  ]
+
+  return (
+    <div className="space-y-6">
+      <EnterpriseBreadcrumbs crumbs={[
+        { label: 'Home', path: '/' },
+        { label: 'Integration', path: '/integration' },
+        { label: 'Import/Export Center' },
+      ]} />
+
+      <EnterpriseToolbar
+        title="Import/Export Center"
+        subtitle="Monitor and manage data integrations"
+        actions={[
+          { label: 'Import File', icon: <FileUp className="w-4 h-4" />, onClick: () => { setImportFileOpen(true); setImportResult(null); setImportFile(null) }, variant: 'primary', permission: { resource: 'import', action: 'create' } },
+          { label: 'New Import', icon: <Upload className="w-4 h-4" />, onClick: () => { setModalType('import'); setFormData({ jobName: '', sourceOrType: '', format: '', configuration: '', schedule: '' }); setShowModal(true) }, variant: 'secondary', permission: { resource: 'import', action: 'create' } },
+          { label: 'New Export', icon: <Download className="w-4 h-4" />, onClick: () => { setModalType('export'); setFormData({ jobName: '', sourceOrType: '', format: '', configuration: '', schedule: '' }); setShowModal(true) }, variant: 'ghost', permission: { resource: 'import', action: 'create' } },
+          { label: 'Refresh', icon: <RefreshCw className="w-4 h-4" />, onClick: () => { setLoading(true); fetchData() }, variant: 'ghost' },
+        ]}
+      />
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+        <EnterpriseKPICard title="Running Jobs" value={kpiRunning} icon={<Activity className="w-5 h-5" />} color="primary" trend="up" />
+        <EnterpriseKPICard title="Completed Today" value={kpiCompleted} icon={<CheckCircle className="w-5 h-5" />} color="success" trend="up" />
+        <EnterpriseKPICard title="Failed Jobs" value={kpiFailed} icon={<XCircle className="w-5 h-5" />} color="error" trend={kpiFailed > 0 ? 'down' : 'up'} />
+        <EnterpriseKPICard title="Active Endpoints" value={endpoints.filter(e => e.status === 'connected').length} icon={<Database className="w-5 h-5" />} color="info" />
+      </div>
+
+      <EnterpriseTabs tabs={tabs} activeTab={activeTab} onChange={setActiveTab} variant="underline" />
+
+      {loading ? (
+        <div className="flex items-center justify-center py-12">
+          <Loader2 className="w-8 h-8 animate-spin text-[var(--text-brand)]" />
+        </div>
+      ) : (
+        <>
+          {activeTab === 'import' && (
+            <EnterpriseDataGrid columns={importColumns} data={importJobs} rowKey="id" pageSize={10} totalElements={importJobs.length} exportable />
+          )}
+
+          {activeTab === 'export' && (
+            <EnterpriseDataGrid columns={exportColumns} data={exportJobs} rowKey="id" pageSize={10} totalElements={exportJobs.length} exportable />
+          )}
+
+          {activeTab === 'dlq' && (
+            <EnterpriseDataGrid columns={dlqColumns} data={dlqEntries} rowKey="id" pageSize={10} totalElements={dlqEntries.length} exportable />
+          )}
+
+          {activeTab === 'health' && (
+            <div className="space-y-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
+                <EnterpriseKPICard title="Active Endpoints" value={endpoints.filter(e => e.status === 'connected').length} icon={<Database className="w-5 h-5" />} color="success" />
+                <EnterpriseKPICard title="Active Flows" value={importJobs.filter(j => j.status !== 'CANCELLED').length + exportJobs.filter(j => j.status !== 'CANCELLED').length} icon={<Activity className="w-5 h-5" />} color="primary" />
+                <EnterpriseKPICard title="Messages Processed" value={(importJobs.reduce((s, j) => s + (j.recordCount || 0), 0) + exportJobs.reduce((s, j) => s + (j.recordCount || 0), 0)).toLocaleString()} icon={<BarChart3 className="w-5 h-5" />} color="info" />
+                <EnterpriseKPICard title="DLQ Count" value={dlqEntries.length} icon={<AlertTriangle className="w-5 h-5" />} color="error" />
+                <EnterpriseKPICard title="Pending CDC" value={stats?.pendingCdc || '0'} icon={<FileText className="w-5 h-5" />} color="warning" />
+              </div>
+
+              <div className="bg-[var(--surface-base)] rounded-xl border border-[var(--border-default)] overflow-hidden">
+                <div className="px-5 py-4 border-b border-[var(--border-default)]">
+                  <h3 className="text-sm font-semibold text-[var(--text-primary)]">Endpoint & Flow Status</h3>
+                </div>
+                <div className="divide-y divide-[var(--surface-sunken)] dark:divide-gray-700">
+                  {endpoints.length === 0 ? (
+                    <div className="px-5 py-8 text-center text-sm text-[var(--text-tertiary)]">No endpoints configured</div>
+                  ) : (
+                    endpoints.map((ep, i) => (
+                      <div key={ep.id || i} className="flex items-center justify-between px-5 py-3 text-sm">
+                        <div className="flex items-center gap-3">
+                          <span className={clsx('w-2 h-2 rounded-full', ep.status === 'connected' ? 'bg-[var(--nexus-success-500)]' : 'bg-[var(--nexus-error-500)]')} />
+                          <span className="font-medium text-[var(--text-primary)]">{ep.name}</span>
+                        </div>
+                        <div className="flex items-center gap-4">
+                          <span className="text-xs text-[var(--text-tertiary)] uppercase">{ep.type}</span>
+                          <span className={clsx('text-xs font-medium', ep.status === 'connected' ? 'text-[var(--nexus-success-600)]' : 'text-[var(--nexus-error-500)]')}>
+                            {ep.status === 'connected' ? 'Connected' : 'Disconnected'}
+                          </span>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {showModal && (
+        <div className="enterprise-modal-overlay">
+          <div className="enterprise-modal max-w-lg">
+            <div className="flex items-center justify-between p-6 border-b border-[var(--border-default)]">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-[var(--interactive-selected)] text-[var(--nexus-primary-700)] dark:text-[var(--nexus-primary-300)]">
+                  {modalType === 'import' ? <Upload className="w-5 h-5" /> : <Download className="w-5 h-5" />}
+                </div>
+                <h2 className="text-lg font-semibold text-[var(--text-primary)]">
+                  New {modalType === 'import' ? 'Import' : 'Export'} Job
+                </h2>
+              </div>
+              <button type="button" onClick={() => setShowModal(false)} className="p-1.5 hover:bg-[var(--surface-muted)] dark:hover:bg-[var(--surface-muted)] rounded-lg transition-colors">
+                <X className="w-5 h-5 text-[var(--text-tertiary)]" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-5">
+              <EnterpriseFormSection title="Job Details" columns={1}>
+                <div>
+                  <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">Job Name</label>
+                  <Autocomplete className="enterprise-input w-full" placeholder={`e.g. ${modalType === 'import' ? 'Shopify Orders Daily Import' : 'Orders CSV Export'}`}
+                    value={formData.jobName} onChange={v => setFormData({ ...formData, jobName: v })} minChars={0} />
+                </div>
+              </EnterpriseFormSection>
+              <EnterpriseFormSection title="Configuration" columns={2}>
+                <div>
+                  <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">{modalType === 'import' ? 'Source' : 'Export Type'}</label>
+                  <Autocomplete className="enterprise-input w-full" value={formData.sourceOrType} onChange={v => setFormData({ ...formData, sourceOrType: v })} suggestions={modalType === 'import' ? sourceOpts : exportTypeOpts} getOptionLabel={o => o.label} getOptionValue={o => o.value} minChars={0} />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">Format</label>
+                  <Autocomplete className="enterprise-input w-full" value={formData.format} onChange={v => setFormData({ ...formData, format: v })} suggestions={formatOpts} getOptionLabel={o => o.label} getOptionValue={o => o.value} minChars={0} />
+                </div>
+              </EnterpriseFormSection>
+              <EnterpriseFormSection title="Advanced" columns={1}>
+                <div>
+                  <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">Configuration (JSON)</label>
+                  <Autocomplete className="enterprise-input w-full font-mono text-xs"
+                    placeholder='{"filter": {"dateFrom": "2026-06-01"}, "batchSize": 1000}'
+                    value={formData.configuration} onChange={v => setFormData({ ...formData, configuration: v })} minChars={0} />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">Schedule (Cron Expression)</label>
+                  <Autocomplete className="enterprise-input w-full font-mono text-sm" placeholder="0 0 * * * (daily at midnight)"
+                    value={formData.schedule} onChange={v => setFormData({ ...formData, schedule: v })} minChars={0} />
+                </div>
+              </EnterpriseFormSection>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 p-6 border-t border-[var(--border-default)]">
+              <button type="button" onClick={() => setShowModal(false)} className="enterprise-btn enterprise-btn-secondary">Cancel</button>
+              <PermissionGate resource="import" action="create">
+                <button type="button" onClick={handleCreateJob} disabled={processing || !formData.jobName} className="enterprise-btn enterprise-btn-primary disabled:opacity-50">
+                  {processing && <Loader2 className="w-4 h-4 animate-spin" />}
+                  <Play className="w-4 h-4" /> Run {modalType === 'import' ? 'Import' : 'Export'}
+                </button>
+              </PermissionGate>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {importFileOpen && (
+        <div className="enterprise-modal-overlay">
+          <div className="enterprise-modal max-w-2xl">
+            <div className="flex items-center justify-between p-6 border-b border-[var(--border-default)]">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-[var(--interactive-selected)] text-[var(--nexus-primary-700)] dark:text-[var(--nexus-primary-300)]">
+                  <FileUp className="w-5 h-5" />
+                </div>
+                <h2 className="text-lg font-semibold text-[var(--text-primary)]">Import File</h2>
+              </div>
+              <button type="button" onClick={resetImportFile} className="p-1.5 hover:bg-[var(--surface-muted)] dark:hover:bg-[var(--surface-muted)] rounded-lg transition-colors">
+                <X className="w-5 h-5 text-[var(--text-tertiary)]" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-5">
+              <EnterpriseFormSection title="Import Configuration" columns={2}>
+                <div>
+                  <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">Entity Type</label>
+                  <Autocomplete className="enterprise-input w-full" value={importEntityType} onChange={v => setImportEntityType(v)} suggestions={entityTypes.map(et => ({ value: et, label: et.charAt(0).toUpperCase() + et.slice(1).replace('-', ' ') }))} getOptionLabel={o => o.label} getOptionValue={o => o.value} minChars={0} />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">File Format</label>
+                  <Autocomplete className="enterprise-input w-full" value={importFormat} onChange={v => setImportFormat(v)} suggestions={formats.map(f => ({ value: f.id, label: f.label }))} getOptionLabel={o => o.label} getOptionValue={o => o.value} minChars={0} />
+                </div>
+              </EnterpriseFormSection>
+
+              <EnterpriseFormSection title="File Upload" columns={1}>
+                <div
+                  onClick={() => fileInputRef.current?.click()}
+                  className="border-2 border-dashed border-[var(--border-default)] rounded-xl p-8 text-center cursor-pointer hover:border-[var(--nexus-primary-400)] transition-colors"
+                >
+                  {importFile ? (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-center gap-3">
+                        {(() => {
+                          const FormatIcon = FORMAT_ICONS[importFormat] || FileText
+                          return <FormatIcon className="w-8 h-8 text-[var(--nexus-primary-500)]" />
+                        })()}
+                        <div className="text-left">
+                          <p className="text-sm font-medium text-[var(--text-primary)]">{importFile.name}</p>
+                          <p className="text-xs text-[var(--text-tertiary)]">{(importFile.size / 1024).toFixed(1)} KB</p>
+                        </div>
+                      </div>
+                      <button type="button" onClick={(e) => { e.stopPropagation(); setImportFile(null) }}
+                        className="text-xs text-[var(--nexus-error-500)] hover:text-[var(--nexus-error-700)] mt-1">Remove</button>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <FileUp className="w-10 h-10 mx-auto text-[var(--text-tertiary)]" />
+                      <p className="text-sm text-[var(--text-secondary)]">Drop a file here or click to browse</p>
+                      <p className="text-xs text-[var(--text-tertiary)]">
+                        {formats.find(f => f.id === importFormat)?.extensions || '.csv, .json, .xml, .edi'} files
+                      </p>
+                    </div>
+                  )}
+                  <input ref={fileInputRef} type="file" className="hidden"
+                    accept={formats.find(f => f.id === importFormat)?.extensions || '.csv,.json,.xml,.edi,.xlsx,.xls'}
+                    onChange={e => setImportFile(e.target.files?.[0] || null)} />
+                </div>
+                <div className="flex justify-center mt-3">
+                  <button type="button" onClick={(e) => { e.stopPropagation(); handleGenerateSample() }}
+                    disabled={importProcessing}
+                    className="enterprise-btn enterprise-btn-secondary text-xs disabled:opacity-50">
+                    <Download className="w-3.5 h-3.5" /> Generate Sample ({importEntityType.replace('-', ' ')}) Data
+                  </button>
+                </div>
+              </EnterpriseFormSection>
+
+              {importResult && (
+                <div className={clsx('rounded-xl border p-4 space-y-3',
+                  importResult.errorCount > 0 ? 'bg-[var(--nexus-error-50)] border-[var(--nexus-error-200)] dark:bg-[var(--nexus-error-900)]/10 dark:border-[var(--nexus-error-800)]' :
+                  'bg-[var(--nexus-success-50)] border-[var(--nexus-success-200)] dark:bg-[var(--nexus-success-900)]/10 dark:border-[var(--nexus-success-800)]')}>
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-sm font-semibold text-[var(--text-primary)]">Import Results</h4>
+                    {importResult.processingTimeMs > 0 && (
+                      <span className="text-xs text-[var(--text-tertiary)]">{importResult.processingTimeMs}ms</span>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-4 gap-3 text-center">
+                    <div>
+                      <p className="text-2xl font-bold text-[var(--text-primary)]">{importResult.totalRecords}</p>
+                      <p className="text-xs text-[var(--text-secondary)]">Total</p>
+                    </div>
+                    <div>
+                      <p className="text-2xl font-bold text-[var(--nexus-success-600)]">{importResult.successCount}</p>
+                      <p className="text-xs text-[var(--text-secondary)]">Success</p>
+                    </div>
+                    <div>
+                      <p className="text-2xl font-bold text-[var(--nexus-error-600)]">{importResult.errorCount}</p>
+                      <p className="text-xs text-[var(--text-secondary)]">Errors</p>
+                    </div>
+                    <div>
+                      <p className="text-2xl font-bold text-[var(--nexus-warning-600)]">{importResult.skippedCount}</p>
+                      <p className="text-xs text-[var(--text-secondary)]">Skipped</p>
+                    </div>
+                  </div>
+                  {importResult.errors.length > 0 && (
+                    <div className="bg-[var(--surface-base)] rounded-lg p-3 max-h-32 overflow-y-auto">
+                      <p className="text-xs font-medium text-[var(--nexus-error-600)] mb-1">Errors:</p>
+                      {importResult.errors.map((err, i) => (
+                        <p key={i} className="text-xs text-[var(--nexus-error-500)] font-mono">• {err}</p>
+                      ))}
+                    </div>
+                  )}
+                  {importResult.warnings.length > 0 && (
+                    <div className="bg-[var(--surface-base)] rounded-lg p-3 max-h-24 overflow-y-auto">
+                      <p className="text-xs font-medium text-[var(--nexus-warning-600)] mb-1">Warnings:</p>
+                      {importResult.warnings.map((w, i) => (
+                        <p key={i} className="text-xs text-[var(--nexus-warning-500)]">• {w}</p>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-3 p-6 border-t border-[var(--border-default)]">
+              <button type="button" onClick={resetImportFile} className="enterprise-btn enterprise-btn-secondary">Close</button>
+              <PermissionGate resource="import" action="create">
+                <button type="button" onClick={handleImportFile} disabled={importProcessing || !importFile}
+                  className="enterprise-btn enterprise-btn-primary disabled:opacity-50">
+                  {importProcessing && <Loader2 className="w-4 h-4 animate-spin" />}
+                  <FileUp className="w-4 h-4" /> Import {importEntityType.replace('-', ' ')}
+                </button>
+              </PermissionGate>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}

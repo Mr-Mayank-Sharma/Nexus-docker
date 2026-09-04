@@ -1,0 +1,24 @@
+# Environment / secrets — NEVER commit
+.env
+*.env.local
+
+# Docker data volumes (if bind-mounted locally)
+data/
+pgdata/
+redisdata/
+kafkadata/
+
+# Build artifacts
+backend/target/
+frontend/dist/
+frontend/node_modules/
+ai-ops/__pycache__/
+ai-intel/__pycache__/
+**/__pycache__/
+*.pyc
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/

@@ -1,0 +1,283 @@
+import { useState, useEffect } from 'react'
+import {
+  Settings, ShoppingCart, Package, Truck, RotateCcw, RefreshCw, Database, Link, ExternalLink, Loader2, Activity,
+} from 'lucide-react'
+import { useToast } from '../hooks/useToast'
+import * as bcApi from '../api/bigcommerce'
+import { BigCommerceConfig, SyncResult } from '../api/bigcommerce'
+import { SyncLog } from '../types'
+import StatusBadge from '../components/common/StatusBadge'
+import Autocomplete from '../components/common/Autocomplete'
+import PermissionGate from '../components/rbac/PermissionGate'
+
+export default function BigCommercePage() {
+  const [activeTab, setActiveTab] = useState<'config' | 'sync' | 'logs'>('config')
+  const [config, setConfig] = useState<BigCommerceConfig | null>(null)
+  const [, setConfigLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [syncing, setSyncing] = useState<string | null>(null)
+  const [syncLogs, setSyncLogs] = useState<SyncLog[]>([])
+  const [logsLoading, setLogsLoading] = useState(false)
+  const { addToast } = useToast()
+
+  const [form, setForm] = useState({
+    storeHash: '', accessToken: '', clientId: '', apiPath: 'https://api.bigcommerce.com',
+    autoSyncOrders: false, autoSyncInventory: false, syncIntervalMinutes: 15,
+  })
+
+  useEffect(() => { fetchConfig() }, [])
+
+  async function fetchConfig() {
+    try {
+      setConfigLoading(true)
+      const res = await bcApi.getConfig()
+      if (res.data) {
+        setConfig(res.data)
+        setForm({
+          storeHash: res.data.storeHash || '',
+          accessToken: res.data.accessToken || '',
+          clientId: res.data.clientId || '',
+          apiPath: res.data.apiPath || 'https://api.bigcommerce.com',
+          autoSyncOrders: res.data.autoSyncOrders || false,
+          autoSyncInventory: res.data.autoSyncInventory || false,
+          syncIntervalMinutes: res.data.syncIntervalMinutes || 15,
+        })
+      }
+    } catch {
+      addToast({ type: 'error', title: 'Failed to load BigCommerce config' })
+    } finally { setConfigLoading(false) }
+  }
+
+  async function handleSave() {
+    if (!form.storeHash.trim() || !form.accessToken.trim()) {
+      addToast({ type: 'warning', title: 'Store Hash and Access Token are required' }); return
+    }
+    setSaving(true)
+    try {
+      const res = await bcApi.updateConfig(form)
+      setConfig(res.data)
+      addToast({ type: 'success', title: 'Configuration saved' })
+    } catch {
+      addToast({ type: 'error', title: 'Failed to save config' })
+    } finally { setSaving(false) }
+  }
+
+  async function handleSync(type: string) {
+    setSyncing(type)
+    try {
+      let res: { data: SyncResult }
+      switch (type) {
+        case 'orders': res = await bcApi.syncOrders(); break
+        case 'products': res = await bcApi.syncProducts(); break
+        case 'inventory': res = await bcApi.pushInventory(); break
+        case 'shipments': res = await bcApi.pushShipments(); break
+        case 'refunds': res = await bcApi.pushRefunds(); break
+        default: return
+      }
+      addToast({ type: res.data.status === 'COMPLETED' ? 'success' : 'error',
+        title: `${type} sync: ${res.data.itemsSucceeded} OK, ${res.data.itemsFailed} failed` })
+      if (activeTab === 'logs') fetchLogs()
+    } catch {
+      addToast({ type: 'error', title: `Failed to sync ${type}` })
+    } finally { setSyncing(null) }
+  }
+
+  async function handleRegisterWebhooks() {
+    try {
+      await bcApi.registerWebhooks(window.location.origin)
+      addToast({ type: 'success', title: 'Webhooks registered' })
+    } catch {
+      addToast({ type: 'error', title: 'Failed to register webhooks' })
+    }
+  }
+
+  async function fetchLogs() {
+    try {
+      setLogsLoading(true)
+      const res = await bcApi.getSyncLogs()
+      setSyncLogs(res.data?.content || [])
+    } catch {
+      addToast({ type: 'error', title: 'Failed to load sync logs' })
+    } finally { setLogsLoading(false) }
+  }
+
+  useEffect(() => { if (activeTab === 'logs') fetchLogs() }, [activeTab])
+
+  const tabs = [
+    { id: 'config', label: 'Configuration', icon: <Settings className="w-4 h-4" /> },
+    { id: 'sync', label: 'Sync Actions', icon: <RefreshCw className="w-4 h-4" /> },
+    { id: 'logs', label: 'Sync Logs', icon: <Activity className="w-4 h-4" /> },
+  ]
+
+  const syncActions = [
+    { id: 'orders', label: 'Import Orders', description: 'Pull new/updated orders from BigCommerce', icon: <ShoppingCart className="w-5 h-5" />, color: 'bg-[var(--nexus-primary-500)]' },
+    { id: 'products', label: 'Sync Products', description: 'Sync product catalog and create mappings', icon: <Package className="w-5 h-5" />, color: 'bg-[var(bg-[var(--nexus-ai-500)])]' },
+    { id: 'inventory', label: 'Push Inventory', description: 'Push NexusShip inventory levels to BigCommerce', icon: <Database className="w-5 h-5" />, color: 'bg-[var(--nexus-success-500)]' },
+    { id: 'shipments', label: 'Push Shipments', description: 'Push tracking info to BigCommerce orders', icon: <Truck className="w-5 h-5" />, color: 'bg-[var(--nexus-warning-500)]' },
+    { id: 'refunds', label: 'Push Refunds', description: 'Push NexusShip return refunds to BigCommerce', icon: <RotateCcw className="w-5 h-5" />, color: 'bg-[var(--nexus-error-500)]' },
+  ]
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-[var(--text-primary)] flex items-center gap-2.5"><ShoppingCart className="w-7 h-7 text-[var(--nexus-primary-500)]" /> BigCommerce Integration</h1>
+          <p className="text-sm text-[var(--text-secondary)] mt-1">Connect your BigCommerce store to synchronize orders, inventory, shipments, and refunds</p>
+        </div>
+        {config?.isActive && (
+          <a href={`https://store-${config.storeHash}.mybigcommerce.com`} target="_blank" rel="noopener noreferrer"
+            className="enterprise-btn enterprise-btn-secondary text-sm">
+            <ExternalLink className="w-4 h-4" /> Open Store
+          </a>
+        )}
+      </div>
+
+      <div className="flex items-center gap-1 border-b border-[var(--border-default)]">
+        {tabs.map(tab => (
+          <button type="button" key={tab.id} onClick={() => setActiveTab(tab.id as any)}
+            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === tab.id ? 'border-[var(--nexus-primary-600)] text-[var(--text-brand)]' : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-secondary)]'
+            }`}>
+            {tab.icon}{tab.label}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'config' && (
+        <div className="card max-w-2xl">
+          <div className="card-header"><h3 className="text-sm font-semibold text-[var(--text-primary)]">API Credentials</h3></div>
+          <div className="card-body space-y-4">
+            <p className="text-xs text-[var(--text-secondary)]">
+              Create API credentials in your BigCommerce control panel under <strong>Advanced Settings &gt; API Accounts &gt; Create API Account</strong>.
+              Ensure the account has Orders, Products, Inventory, and Shipments permissions.
+            </p>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="col-span-2">
+                <label className="block text-sm font-medium text-[var(--text-secondary)] mb-1">Store Hash</label>
+                <Autocomplete value={form.storeHash} onChange={v => setForm({ ...form, storeHash: v })} className="input w-full font-mono text-sm" placeholder="abc123" minChars={0} />
+                <p className="text-xs text-[var(--text-tertiary)] mt-1">Found in your BigCommerce store URL: https://store-<strong>abc123</strong>.mybigcommerce.com</p>
+              </div>
+              <div className="col-span-2">
+                <label className="block text-sm font-medium text-[var(--text-secondary)] mb-1">Access Token</label>
+                <Autocomplete value={form.accessToken} onChange={v => setForm({ ...form, accessToken: v })} className="input w-full font-mono text-sm" placeholder="xxxxxxxxxxxx" minChars={0} />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-[var(--text-secondary)] mb-1">Client ID</label>
+                <Autocomplete value={form.clientId} onChange={v => setForm({ ...form, clientId: v })} className="input w-full font-mono text-sm" placeholder="Optional" minChars={0} />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-[var(--text-secondary)] mb-1">API Path</label>
+                <Autocomplete value={form.apiPath} onChange={v => setForm({ ...form, apiPath: v })} className="input w-full font-mono text-sm" minChars={0} />
+              </div>
+            </div>
+
+            <hr className="border-[var(--border-subtle)]" />
+            <h4 className="text-sm font-medium text-[var(--text-secondary)]">Auto-Sync Settings</h4>
+            <div className="flex items-center gap-6">
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={form.autoSyncOrders} onChange={e => setForm({ ...form, autoSyncOrders: e.target.checked })} className="rounded border-[var(--border-default)]" />
+                Auto-sync orders
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={form.autoSyncInventory} onChange={e => setForm({ ...form, autoSyncInventory: e.target.checked })} className="rounded border-[var(--border-default)]" />
+                Auto-sync inventory
+              </label>
+            </div>
+            <div className="flex items-center gap-3">
+              <label className="text-sm text-[var(--text-secondary)]">Sync interval (minutes):</label>
+              <Autocomplete value={String(form.syncIntervalMinutes)} onChange={v => setForm({ ...form, syncIntervalMinutes: parseInt(v) || 15 })} className="input w-20 text-sm" minChars={0} />
+            </div>
+
+            {config?.lastOrderSyncAt && (
+              <div className="bg-[var(--surface-sunken)] rounded-lg p-3 text-xs text-[var(--text-secondary)] space-y-1">
+                <p>Last order sync: {new Date(config.lastOrderSyncAt).toLocaleString()}</p>
+                <p>Last product sync: {config.lastProductSyncAt ? new Date(config.lastProductSyncAt).toLocaleString() : 'Never'}</p>
+                <p>Last inventory sync: {config.lastInventorySyncAt ? new Date(config.lastInventorySyncAt).toLocaleString() : 'Never'}</p>
+              </div>
+            )}
+          </div>
+          <div className="card-footer flex justify-between">
+            <PermissionGate resource="integrations" action="create">
+              <button type="button" onClick={handleRegisterWebhooks} className="enterprise-btn enterprise-btn-secondary text-sm">
+                <Link className="w-4 h-4" /> Register Webhooks
+              </button>
+            </PermissionGate>
+            <PermissionGate resource="integrations" action="edit">
+              <button type="button" onClick={handleSave} disabled={saving} className="enterprise-btn enterprise-btn-primary text-sm">
+                {saving && <Loader2 className="w-4 h-4 animate-spin" />}
+                Save Configuration
+              </button>
+            </PermissionGate>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'sync' && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {syncActions.map(action => (
+            <div key={action.id} className="card p-5">
+              <div className={`w-10 h-10 ${action.color} rounded-lg flex items-center justify-center mb-3`}>
+                <div className="text-white">{action.icon}</div>
+              </div>
+              <h3 className="text-sm font-semibold text-[var(--text-primary)]">{action.label}</h3>
+              <p className="text-xs text-[var(--text-secondary)] mt-1 mb-4">{action.description}</p>
+              <PermissionGate resource="integrations" action="create">
+                <button type="button" onClick={() => handleSync(action.id)} disabled={syncing === action.id}
+                  className="enterprise-btn enterprise-btn-primary text-xs w-full">
+                  {syncing === action.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                  {syncing === action.id ? 'Running...' : 'Run Now'}
+                </button>
+              </PermissionGate>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {activeTab === 'logs' && (
+        <div className="card">
+          <div className="card-header flex justify-between items-center">
+            <h3 className="text-sm font-semibold text-[var(--text-primary)]">Sync History</h3>
+            <button type="button" onClick={fetchLogs} className="enterprise-btn enterprise-btn-ghost p-1"><RefreshCw className="w-4 h-4" /></button>
+          </div>
+          {logsLoading ? (
+            <div className="flex items-center justify-center h-32">
+              <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-[var(--nexus-primary-600)]" />
+            </div>
+          ) : syncLogs.length === 0 ? (
+            <div className="p-6 text-center">
+              <Activity className="w-10 h-10 text-[var(--text-tertiary)] mx-auto mb-2" />
+              <p className="text-sm text-[var(--text-secondary)]">No sync logs yet. Run a sync to see results.</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-[var(--border-subtle)] bg-[var(--surface-sunken)]/50">
+                    <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--text-secondary)] uppercase">Type</th>
+                    <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--text-secondary)] uppercase">Status</th>
+                    <th className="px-6 py-3 text-right text-xs font-semibold text-[var(--text-secondary)] uppercase">Processed</th>
+                    <th className="px-6 py-3 text-right text-xs font-semibold text-[var(--text-secondary)] uppercase">Succeeded</th>
+                    <th className="px-6 py-3 text-right text-xs font-semibold text-[var(--text-secondary)] uppercase">Failed</th>
+                    <th className="px-6 py-3 text-right text-xs font-semibold text-[var(--text-secondary)] uppercase">Started</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--surface-sunken)]">
+                  {syncLogs.map(log => (
+                    <tr key={log.id} className="hover:bg-[var(--surface-sunken)]">
+                      <td className="px-6 py-3 text-sm font-medium text-[var(--text-primary)]">{log.syncType.replace(/_/g, ' ')}</td>
+                      <td className="px-6 py-3"><StatusBadge status={log.status} size="sm" /></td>
+                      <td className="px-6 py-3 text-sm text-[var(--text-secondary)] text-right">{log.itemsProcessed}</td>
+                      <td className="px-6 py-3 text-sm text-[var(--nexus-success-600)] text-right">{log.itemsSucceeded}</td>
+                      <td className="px-6 py-3 text-sm text-[var(--nexus-error-600)] text-right">{log.itemsFailed}</td>
+                      <td className="px-6 py-3 text-sm text-[var(--text-tertiary)] text-right">{new Date(log.startedAt).toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}

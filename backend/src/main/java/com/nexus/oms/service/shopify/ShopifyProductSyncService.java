@@ -1,0 +1,238 @@
+package com.nexus.oms.service.shopify;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.nexus.oms.dto.SyncResult;
+import com.nexus.oms.entity.*;
+import com.nexus.oms.repository.*;
+import com.nexus.oms.service.IntegrationStoreService;
+import com.nexus.oms.service.ProductService;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.*;
+
+@Service
+public class ShopifyProductSyncService {
+
+    private final ShopifyClient shopifyClient;
+    private final IntegrationStoreService storeService;
+    private final ShopifyTokenService tokenService;
+    private final NxIntegrationStoreRepository storeRepository;
+    private final NxIntegrationSyncConfigRepository syncConfigRepository;
+    private final NxSyncLogRepository syncLogRepository;
+    private final NxProductMappingRepository productMappingRepository;
+    private final InventoryRepository inventoryRepository;
+    private final NodeRepository nodeRepository;
+    private final ProductRepository productRepository;
+    private final ProductService productService;
+
+    public ShopifyProductSyncService(ShopifyClient shopifyClient,
+                                      IntegrationStoreService storeService,
+                                      ShopifyTokenService tokenService,
+                                      NxIntegrationStoreRepository storeRepository,
+                                      NxIntegrationSyncConfigRepository syncConfigRepository,
+                                      NxSyncLogRepository syncLogRepository,
+                                      NxProductMappingRepository productMappingRepository,
+                                      InventoryRepository inventoryRepository,
+                                      NodeRepository nodeRepository,
+                                      ProductRepository productRepository,
+                                      ProductService productService) {
+        this.shopifyClient = shopifyClient;
+        this.storeService = storeService;
+        this.tokenService = tokenService;
+        this.storeRepository = storeRepository;
+        this.syncConfigRepository = syncConfigRepository;
+        this.syncLogRepository = syncLogRepository;
+        this.productMappingRepository = productMappingRepository;
+        this.inventoryRepository = inventoryRepository;
+        this.nodeRepository = nodeRepository;
+        this.productRepository = productRepository;
+        this.productService = productService;
+    }
+
+    @Transactional
+    public SyncResult syncProducts(UUID storeId) {
+        NxIntegrationStore store = storeService.getStore(storeId);
+        String shopDomain = storeService.getSetting(storeId, "shop_domain");
+        String accessToken = tokenService.getAccessToken(storeId);
+
+        NxSyncLog syncLog = NxSyncLog.builder()
+                .tenantId(store.getTenantId())
+                .integrationType("SHOPIFY_" + store.getStoreCode())
+                .syncType("PRODUCT_SYNC")
+                .status("RUNNING")
+                .build();
+        syncLog = syncLogRepository.save(syncLog);
+
+        int processed = 0, succeeded = 0, failed = 0;
+        try {
+            List<NxNode> nodes = nodeRepository.findByTenantId(store.getTenantId());
+            String nextPageInfo = null;
+
+            while (true) {
+                Map<String, String> params = new HashMap<>();
+                if (nextPageInfo == null) {
+                    params.put("limit", "250");
+                    params.put("fields", "id,title,sku,variants,image,images");
+                    params.put("published_status", "any");
+                } else {
+                    params.put("page_info", nextPageInfo);
+                }
+
+                ShopifyClient.ProductPage page = fetchPageWithRetry(shopDomain, accessToken, params);
+                nextPageInfo = page.nextPageInfo();
+                JsonNode response = page.body();
+                JsonNode products = response != null ? response.get("products") : null;
+
+                if (products == null || !products.isArray() || products.isEmpty()) {
+                    break;
+                }
+
+                for (JsonNode product : products) {
+                    long productId = product.get("id").asLong();
+                    try {
+                        String title = product.has("title") ? product.get("title").asText() : "";
+                        String imageUrl = product.has("image") && product.get("image").has("src")
+                                ? product.get("image").get("src").asText() : null;
+
+                        JsonNode variants = product.get("variants");
+                        if (variants != null && variants.isArray()) {
+                            for (JsonNode variant : variants) {
+                                long variantId = variant.get("id").asLong();
+                                String sku = variant.has("sku") ? variant.get("sku").asText() : ("SPF-" + productId + "-" + variantId);
+                                if (sku.isBlank()) sku = "SPF-" + productId + "-" + variantId;
+
+                                NxProductMapping mapping = productMappingRepository
+                                        .findByTenantIdAndBcSku(store.getTenantId(), sku)
+                                        .orElse(NxProductMapping.builder()
+                                                .tenantId(store.getTenantId())
+                                                .bcProductId(productId)
+                                                .bcVariantId(variantId)
+                                                .bcSku(sku)
+                                                .nexusSku(sku)
+                                                .nexusProductName(title)
+                                                .imageUrl(imageUrl)
+                                                .build());
+                                mapping.setBcProductId(productId);
+                                mapping.setBcVariantId(variantId);
+                                mapping.setLastSyncedAt(LocalDateTime.now());
+                                mapping.setImageUrl(imageUrl);
+                                productMappingRepository.save(mapping);
+
+                                Product productRow = productRepository
+                                        .findByTenantIdAndSku(store.getTenantId(), sku)
+                                        .orElse(new Product());
+                                productRow.setTenantId(store.getTenantId());
+                                productRow.setSku(sku);
+                                productRow.setProductName(title);
+                                productRow.setUnitPrice(priceOf(variant));
+                                productRow.setIsActive(true);
+                                productRow.setImageUrl(imageUrl);
+                                productRepository.save(productRow);
+
+                                if (!nodes.isEmpty()) {
+                                    NxNode node = nodes.get(0);
+                                    if (inventoryRepository.findByTenantIdAndSku(store.getTenantId(), sku).isEmpty()) {
+                                        inventoryRepository.save(NxInventory.builder()
+                                                .tenantId(store.getTenantId())
+                                                .sku(sku)
+                                                .nodeId(node.getId())
+                                                .quantityOnHand(variant.has("inventory_quantity") ? variant.get("inventory_quantity").asInt() : 0)
+                                                .quantityAllocated(0).quantityReserved(0).quantityInTransit(0)
+                                                .quantityOnOrder(0).quantityDamaged(0).safetyStock(0).reorderPoint(0).reorderQty(0)
+                                                .build());
+                                    }
+                                }
+                                succeeded++;
+                            }
+                        }
+                    } catch (Exception e) {
+                        failed++;
+                    }
+                    processed++;
+                }
+
+                if (nextPageInfo == null) {
+                    break;
+                }
+            }
+
+            productService.evictProductsCache();
+
+            updateSyncConfig(storeId, "PRODUCT_SYNC", "COMPLETED", processed, succeeded, failed, null);
+            syncLog.setStatus("COMPLETED");
+            syncLog.setCompletedAt(LocalDateTime.now());
+            syncLog.setItemsProcessed(processed);
+            syncLog.setItemsSucceeded(succeeded);
+            syncLog.setItemsFailed(failed);
+            syncLogRepository.save(syncLog);
+
+        } catch (Exception e) {
+            syncLog.setStatus("FAILED");
+            syncLog.setCompletedAt(LocalDateTime.now());
+            syncLog.setItemsProcessed(processed);
+            syncLog.setItemsSucceeded(succeeded);
+            syncLog.setItemsFailed(failed);
+            syncLog.setErrorMessage(e.getMessage());
+            syncLogRepository.save(syncLog);
+        }
+
+        return SyncResult.builder()
+                .syncLogId(syncLog.getId())
+                .syncType("PRODUCT_SYNC")
+                .status(syncLog.getStatus())
+                .itemsProcessed(processed)
+                .itemsSucceeded(succeeded)
+                .itemsFailed(failed)
+                .build();
+    }
+
+    private ShopifyClient.ProductPage fetchPageWithRetry(String shopDomain, String accessToken, Map<String, String> params) {
+        int attempts = 3;
+        RuntimeException last = null;
+        for (int i = 0; i < attempts; i++) {
+            try {
+                return shopifyClient.getProductsPage(shopDomain, accessToken, params);
+            } catch (RuntimeException e) {
+                last = e;
+                if (i < attempts - 1) {
+                    try {
+                        Thread.sleep(2000L * (i + 1));
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
+        }
+        throw last;
+    }
+
+    private BigDecimal priceOf(JsonNode variant) {
+        JsonNode price = variant.get("price");
+        if (price == null || price.isNull()) return BigDecimal.ZERO;
+        String text = price.asText();
+        if (text == null || text.isBlank()) return BigDecimal.ZERO;
+        try {
+            return new BigDecimal(text.trim());
+        } catch (NumberFormatException e) {
+            return BigDecimal.ZERO;
+        }
+    }
+
+    private void updateSyncConfig(UUID storeId, String syncType, String status, int processed, int succeeded, int failed, List<String> errors) {
+        NxIntegrationSyncConfig config = syncConfigRepository.findByStoreIdAndSyncType(storeId, syncType).orElse(null);
+        if (config != null) {
+            config.setLastSyncAt(LocalDateTime.now());
+            config.setLastSyncStatus(status);
+            String __m = processed + " processed, " + succeeded + " OK, " + failed + " failed";
+
+            __m = __m.length() > 250 ? __m.substring(0, 250) + "..." : __m;
+
+            config.setLastSyncMessage(__m);
+            syncConfigRepository.save(config);
+        }
+    }
+}

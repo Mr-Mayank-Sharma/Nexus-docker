@@ -1,0 +1,73 @@
+# =============================================================================
+# Nexus OMS — Prometheus alert rules
+# =============================================================================
+#
+# NOTE: These rules reference metrics that are only available once the
+# corresponding scrape targets are enabled (see prometheus.yml). The backend
+# HTTP metrics (http_server_requests_*), inventory/integration custom metrics,
+# and Kafka consumer lag require either the backend prometheus endpoint to be
+# exposed (with auth) or dedicated exporters to be added.
+#
+# The rules are kept here as ready-to-use templates. Enable them by:
+#   1. Adding the scrape targets in prometheus.yml, and
+#   2. Uncommenting the corresponding rules below.
+# =============================================================================
+
+groups:
+  - name: nexus-oms-alerts
+    interval: 30s
+    rules:
+      # Backend is down (works for any active scrape target)
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+
+      # --- Rules below require backend prometheus metrics (see note above) ---
+      # - alert: HighErrorRate
+      #   expr: rate(http_server_requests_seconds_count{status=~"5.."}[5m]) > 0.1
+      #   for: 5m
+      #   labels:
+      #     severity: critical
+      #   annotations:
+      #     summary: "High HTTP error rate ({{ $value }})"
+      #     description: "Error rate is above threshold for 5 minutes"
+
+      # - alert: LowInventory
+      #   expr: nexus_inventory_stock{status="low"} > 0
+      #   for: 1m
+      #   labels:
+      #     severity: warning
+      #   annotations:
+      #     summary: "Low inventory detected"
+      #     description: "Some SKUs are below minimum stock threshold"
+
+      # - alert: IntegrationFailed
+      #   expr: rate(nexus_integration_sync_failed_total[5m]) > 0
+      #   for: 2m
+      #   labels:
+      #     severity: critical
+      #   annotations:
+      #     summary: "Integration sync failures detected"
+      #     description: "One or more integrations are failing to sync"
+
+      # - alert: HighLatency
+      #   expr: http_server_requests_seconds_max{uri!~".*actuator.*"} > 5
+      #   for: 5m
+      #   labels:
+      #     severity: warning
+      #   annotations:
+      #     summary: "High request latency detected"
+      #     description: "Request latency exceeds 5 seconds"
+
+      # - alert: KafkaLag
+      #   expr: kafka_consumer_lag > 1000
+      #   for: 5m
+      #   labels:
+      #     severity: warning
+      #   annotations:
+      #     summary: "Kafka consumer lag"
+      #     description: "Consumer group is falling behind"

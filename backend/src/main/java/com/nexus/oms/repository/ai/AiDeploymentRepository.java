@@ -1,0 +1,26 @@
+package com.nexus.oms.repository.ai;
+
+import com.nexus.oms.entity.ai.*;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+
+public interface AiDeploymentRepository extends JpaRepository<AiDeployment, UUID> {
+    List<AiDeployment> findByTenantIdAndModelId(UUID tenantId, UUID modelId);
+    // List variant: rollback()/supersede flows legitimately create multiple rows
+    // per (tenant, model, environment). The old Optional variant threw
+    // IncorrectResultSizeDataAccessException in that case. Callers pick ACTIVE.
+    List<AiDeployment> findAllByTenantIdAndModelIdAndEnvironment(UUID tenantId, UUID modelId, String environment);
+    List<AiDeployment> findByTenantIdAndStatus(UUID tenantId, String status);
+    List<AiDeployment> findByTenantId(UUID tenantId);
+    List<AiDeployment> findByVersionId(UUID versionId);
+}

@@ -1,0 +1,399 @@
+package com.nexus.oms.controller.ai;
+
+import com.nexus.oms.dto.ApiResponse;
+import com.nexus.oms.entity.ai.*;
+import com.nexus.oms.security.TenantContext;
+import com.nexus.oms.service.ai.*;
+import jakarta.validation.Valid;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+
+
+
+@RestController
+@RequestMapping("/ai")
+public class AiPlatformController {
+
+    private final AiGatewayService gatewayService;
+    private final AiModelRegistryService modelRegistryService;
+    private final AiFeatureStoreService featureStoreService;
+    private final AiTrainingPipelineService trainingPipelineService;
+    private final AiInferenceService inferenceService;
+    private final AiRuleEngineService ruleEngineService;
+    private final AiMonitoringService monitoringService;
+    private final AiAnalyticsService analyticsService;
+    private final AiExperimentService experimentService;
+    private final AiTrainingDataService trainingDataService;
+    private final AiArtifactService artifactService;
+    private final AiCalibrationService calibrationService;
+    private final AiOnnxRuntimeService onnxRuntimeService;
+    private final AiTrainingOrchestrationService trainingOrchestrationService;
+
+    public AiPlatformController(AiGatewayService gatewayService,
+                                 AiModelRegistryService modelRegistryService,
+                                 AiFeatureStoreService featureStoreService,
+                                 AiTrainingPipelineService trainingPipelineService,
+                                 AiInferenceService inferenceService,
+                                 AiRuleEngineService ruleEngineService,
+                                 AiMonitoringService monitoringService,
+                                 AiAnalyticsService analyticsService,
+                                 AiExperimentService experimentService,
+                                 AiTrainingDataService trainingDataService,
+                                 AiArtifactService artifactService,
+                                 AiCalibrationService calibrationService,
+                                 AiOnnxRuntimeService onnxRuntimeService,
+                                 AiTrainingOrchestrationService trainingOrchestrationService) {
+        this.gatewayService = gatewayService;
+        this.modelRegistryService = modelRegistryService;
+        this.featureStoreService = featureStoreService;
+        this.trainingPipelineService = trainingPipelineService;
+        this.inferenceService = inferenceService;
+        this.ruleEngineService = ruleEngineService;
+        this.monitoringService = monitoringService;
+        this.analyticsService = analyticsService;
+        this.experimentService = experimentService;
+        this.trainingDataService = trainingDataService;
+        this.artifactService = artifactService;
+        this.calibrationService = calibrationService;
+        this.onnxRuntimeService = onnxRuntimeService;
+        this.trainingOrchestrationService = trainingOrchestrationService;
+    }
+
+    private UUID tenant() { return TenantContext.getCurrentTenantId(); }
+
+    @GetMapping
+    public ResponseEntity<ApiResponse<Map<String, String>>> getAiDashboard() {
+        return ResponseEntity.ok(ApiResponse.success(Map.of("status", "ok")));
+    }
+
+    // ========== GATEWAY ==========
+    @PostMapping("/predict/{modelType}")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> predict(
+            @PathVariable String modelType, @RequestBody Map<String, Object> input) {
+        return ResponseEntity.ok(ApiResponse.success(gatewayService.predict(modelType, input)));
+    }
+
+    // ========== MODEL REGISTRY ==========
+    @GetMapping("/models")
+    public ResponseEntity<ApiResponse<Page<AiModel>>> getModels(
+            @RequestParam(required = false) String category,
+            @RequestParam(required = false) String status,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return ResponseEntity.ok(ApiResponse.success(
+                modelRegistryService.getModels(tenant(), category, status, PageRequest.of(page, size))));
+    }
+
+    @GetMapping("/models/{modelId}")
+    public ResponseEntity<ApiResponse<AiModel>> getModel(@PathVariable UUID modelId) {
+        return ResponseEntity.ok(ApiResponse.success(
+                modelRegistryService.getModel(modelId).orElseThrow()));
+    }
+
+    @PostMapping("/models")
+    public ResponseEntity<ApiResponse<AiModel>> createModel(@Valid @RequestBody AiModel model) {
+        return ResponseEntity.ok(ApiResponse.success(modelRegistryService.createModel(model)));
+    }
+
+    @PutMapping("/models/{modelId}")
+    public ResponseEntity<ApiResponse<AiModel>> updateModel(
+            @PathVariable UUID modelId, @RequestBody AiModel updates) {
+        return ResponseEntity.ok(ApiResponse.success(modelRegistryService.updateModel(modelId, updates)));
+    }
+
+    @GetMapping("/models/{modelId}/versions")
+    public ResponseEntity<ApiResponse<List<AiModelVersion>>> getVersions(@PathVariable UUID modelId) {
+        return ResponseEntity.ok(ApiResponse.success(modelRegistryService.getVersions(modelId)));
+    }
+
+    @PostMapping("/models/{modelId}/versions")
+    public ResponseEntity<ApiResponse<AiModelVersion>> createVersion(
+            @PathVariable UUID modelId, @RequestBody AiModelVersion version) {
+        return ResponseEntity.ok(ApiResponse.success(modelRegistryService.createVersion(modelId, version)));
+    }
+
+    @PostMapping("/models/{modelId}/deploy/{versionId}")
+    public ResponseEntity<ApiResponse<AiDeployment>> deploy(
+            @PathVariable UUID modelId, @PathVariable UUID versionId,
+            @RequestParam(defaultValue = "PRODUCTION") String environment,
+            @RequestParam(defaultValue = "false") boolean force) {
+        try {
+            return ResponseEntity.ok(ApiResponse.success(
+                    modelRegistryService.deploy(tenant(), modelId, versionId, environment, force)));
+        } catch (AiGateBlockedException e) {
+            return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
+                    .body(ApiResponse.error(e.getMessage()
+                            + " | Pass ?force=true to override (logged and stamped on the version)"));
+        }
+    }
+
+    @PostMapping("/models/{modelId}/ramp/{versionId}")
+    public ResponseEntity<ApiResponse<AiDeployment>> ramp(
+            @PathVariable UUID modelId, @PathVariable UUID versionId) {
+        return ResponseEntity.ok(ApiResponse.success(
+                modelRegistryService.ramp(tenant(), modelId, versionId)));
+    }
+
+    @PostMapping("/models/{modelId}/rollback/{versionId}")
+    public ResponseEntity<ApiResponse<Void>> rollback(
+            @PathVariable UUID modelId, @PathVariable UUID versionId) {
+        modelRegistryService.rollback(tenant(), modelId, versionId);
+        return ResponseEntity.ok(ApiResponse.success(null, "Rolled back successfully"));
+    }
+
+    @GetMapping("/models/summary")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> getModelSummary() {
+        return ResponseEntity.ok(ApiResponse.success(modelRegistryService.getRegistrySummary(tenant())));
+    }
+
+    // ========== FEATURE STORE ==========
+    @GetMapping("/features")
+    public ResponseEntity<ApiResponse<Page<AiFeatureDefinition>>> getFeatures(
+            @RequestParam(required = false) String featureGroup,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return ResponseEntity.ok(ApiResponse.success(
+                featureStoreService.getDefinitions(tenant(), featureGroup, PageRequest.of(page, size))));
+    }
+
+    @PostMapping("/features")
+    public ResponseEntity<ApiResponse<AiFeatureDefinition>> createFeature(
+            @Valid @RequestBody AiFeatureDefinition def) {
+        return ResponseEntity.ok(ApiResponse.success(featureStoreService.createDefinition(def)));
+    }
+
+    @GetMapping("/features/groups")
+    public ResponseEntity<ApiResponse<List<Map<String, Object>>>> getFeatureGroups() {
+        return ResponseEntity.ok(ApiResponse.success(featureStoreService.getFeatureGroups(tenant())));
+    }
+
+    // ========== TRAINING PIPELINE ==========
+    @GetMapping("/training/jobs")
+    public ResponseEntity<ApiResponse<Page<AiTrainingJob>>> getTrainingJobs(
+            @RequestParam(required = false) UUID modelId,
+            @RequestParam(required = false) String status,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return ResponseEntity.ok(ApiResponse.success(
+                trainingPipelineService.getJobs(tenant(), modelId, status, PageRequest.of(page, size))));
+    }
+
+    @GetMapping("/training/jobs/{jobId}")
+    public ResponseEntity<ApiResponse<AiTrainingJob>> getTrainingJob(@PathVariable UUID jobId) {
+        return ResponseEntity.ok(ApiResponse.success(trainingPipelineService.getJob(jobId).orElseThrow()));
+    }
+
+    @PostMapping("/training/jobs")
+    public ResponseEntity<ApiResponse<AiTrainingJob>> createTrainingJob(
+            @RequestParam UUID modelId, @RequestBody Map<String, Object> config) {
+        return ResponseEntity.ok(ApiResponse.success(trainingPipelineService.createJob(tenant(), modelId, config)));
+    }
+
+    @PostMapping("/training/jobs/{jobId}/start")
+    public ResponseEntity<ApiResponse<AiTrainingJob>> startTrainingJob(@PathVariable UUID jobId) {
+        return ResponseEntity.ok(ApiResponse.success(trainingPipelineService.startJob(jobId)));
+    }
+
+    @PostMapping("/training/jobs/{jobId}/run")
+    public ResponseEntity<ApiResponse<AiTrainingJob>> runTrainingJob(@PathVariable UUID jobId) {
+        return ResponseEntity.ok(ApiResponse.success(trainingOrchestrationService.runJob(jobId)));
+    }
+
+    @PostMapping("/training/jobs/{jobId}/complete")
+    public ResponseEntity<ApiResponse<AiTrainingJob>> completeTrainingJob(
+            @PathVariable UUID jobId, @RequestBody Map<String, Object> results) {
+        return ResponseEntity.ok(ApiResponse.success(trainingPipelineService.completeJob(jobId, results)));
+    }
+
+    @PostMapping("/training/jobs/{jobId}/fail")
+    public ResponseEntity<ApiResponse<AiTrainingJob>> failTrainingJob(
+            @PathVariable UUID jobId, @RequestBody Map<String, String> body) {
+        return ResponseEntity.ok(ApiResponse.success(
+                trainingPipelineService.failJob(jobId, body.getOrDefault("error", "Unknown error"))));
+    }
+
+    // ========== MONITORING ==========
+    @GetMapping("/monitoring/models/{modelId}")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> getModelHealth(@PathVariable UUID modelId) {
+        return ResponseEntity.ok(ApiResponse.success(monitoringService.getModelHealth(modelId)));
+    }
+
+    @GetMapping("/monitoring/dashboard")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> getMonitoringDashboard() {
+        return ResponseEntity.ok(ApiResponse.success(monitoringService.getDashboardSummary(tenant())));
+    }
+
+    // ========== ANALYTICS ==========
+    @GetMapping("/analytics/dashboard")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> getTenantDashboard() {
+        return ResponseEntity.ok(ApiResponse.success(analyticsService.getTenantDashboard(tenant())));
+    }
+
+    // ========== INFERENCE LOGS ==========
+    @GetMapping("/models/{modelId}/inference-logs")
+    public ResponseEntity<ApiResponse<Page<AiInferenceLog>>> getInferenceLogs(
+            @PathVariable UUID modelId,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return ResponseEntity.ok(ApiResponse.success(
+                Page.empty(), "Not implemented"));
+    }
+
+    // ========== RULE FALLBACKS ==========
+    @GetMapping("/fallbacks/{modelId}")
+    public ResponseEntity<ApiResponse<List<AiRuleFallback>>> getFallbacks(@PathVariable UUID modelId) {
+        return ResponseEntity.ok(ApiResponse.success(ruleEngineService.executeFallback(
+                tenant(), "DEMAND_FORECAST", Map.of()).entrySet().stream()
+                .map(e -> AiRuleFallback.builder().name(e.getKey()).build())
+                .toList()));
+    }
+
+    // ========== PREDICT (direct inference, no gateway) ==========
+    @PostMapping("/predict/direct/{modelId}/{versionId}")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> directPredict(
+            @PathVariable UUID modelId, @PathVariable UUID versionId, @RequestBody Map<String, Object> input) {
+        return ResponseEntity.ok(ApiResponse.success(inferenceService.execute(modelId, versionId, input)));
+    }
+
+    // ========== EXPERIMENTS ==========
+    @GetMapping("/experiments")
+    public ResponseEntity<ApiResponse<Page<AiExperiment>>> getExperiments(
+            @RequestParam(required = false) String modelId,
+            @RequestParam(required = false) String status,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        UUID parsedModelId = null;
+        if (modelId != null && !modelId.isBlank()) {
+            try {
+                parsedModelId = UUID.fromString(modelId);
+            } catch (IllegalArgumentException ignored) {
+            }
+        }
+        return ResponseEntity.ok(ApiResponse.success(
+                experimentService.getExperiments(tenant(), parsedModelId, status, PageRequest.of(page, size))));
+    }
+
+    @GetMapping("/experiments/{id}")
+    public ResponseEntity<ApiResponse<AiExperiment>> getExperiment(@PathVariable UUID id) {
+        return ResponseEntity.ok(ApiResponse.success(experimentService.getExperiment(id)));
+    }
+
+    @PostMapping("/experiments")
+    public ResponseEntity<ApiResponse<AiExperiment>> createExperiment(@Valid @RequestBody AiExperiment experiment) {
+        experiment.setTenantId(tenant());
+        return ResponseEntity.ok(ApiResponse.success(experimentService.createExperiment(experiment)));
+    }
+
+    @PutMapping("/experiments/{id}")
+    public ResponseEntity<ApiResponse<AiExperiment>> updateExperiment(
+            @PathVariable UUID id, @RequestBody AiExperiment updates) {
+        return ResponseEntity.ok(ApiResponse.success(experimentService.updateExperiment(id, updates)));
+    }
+
+    @PostMapping("/experiments/{id}/start")
+    public ResponseEntity<ApiResponse<AiExperiment>> startExperiment(@PathVariable UUID id) {
+        return ResponseEntity.ok(ApiResponse.success(experimentService.startExperiment(id)));
+    }
+
+    @PostMapping("/experiments/{id}/complete")
+    public ResponseEntity<ApiResponse<AiExperiment>> completeExperiment(
+            @PathVariable UUID id, @RequestBody Map<String, String> body) {
+        UUID winnerVersionId = Optional.ofNullable(body.get("winnerVersionId"))
+                .filter(s -> !s.isBlank())
+                .map(UUID::fromString)
+                .orElse(null);
+        return ResponseEntity.ok(ApiResponse.success(
+                experimentService.completeExperiment(id, winnerVersionId)));
+    }
+
+    @PostMapping("/experiments/{id}/rollback")
+    public ResponseEntity<ApiResponse<AiExperiment>> rollbackExperiment(@PathVariable UUID id) {
+        return ResponseEntity.ok(ApiResponse.success(experimentService.rollbackExperiment(id)));
+    }
+
+    @PostMapping("/experiments/{id}/fail")
+    public ResponseEntity<ApiResponse<AiExperiment>> failExperiment(
+            @PathVariable UUID id, @RequestBody Map<String, String> body) {
+        return ResponseEntity.ok(ApiResponse.success(
+                experimentService.failExperiment(id, body.getOrDefault("error", "Unknown error"))));
+    }
+
+    // ========== TRAINING DATA (Phase 0+1) ==========
+    @GetMapping("/training/data/demand")
+    public ResponseEntity<String> exportDemandData(
+            @RequestParam(defaultValue = "365") int lookbackDays) {
+        String jsonl = trainingDataService.exportDemandJsonl(tenant(), lookbackDays);
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=demand_export.jsonl")
+                .contentType(MediaType.parseMediaType("application/x-ndjson"))
+                .body(jsonl);
+    }
+
+    @GetMapping("/training/data/demand/count")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> demandDataStats(
+            @RequestParam(defaultValue = "365") int lookbackDays) {
+        return ResponseEntity.ok(ApiResponse.success(Map.of(
+                "records", trainingDataService.getDemandRecordCount(tenant(), lookbackDays),
+                "skus", trainingDataService.getSkusWithHistory(tenant(), lookbackDays).size(),
+                "lookbackDays", lookbackDays)));
+    }
+
+    @PostMapping("/training/data/demand/materialize")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> materializeDemandFeatures(
+            @RequestParam(defaultValue = "365") int lookbackDays) {
+        int written = trainingDataService.materializeDemandFeatures(tenant(), lookbackDays);
+        return ResponseEntity.ok(ApiResponse.success(Map.of(
+                "featureStoreValuesWritten", written,
+                "lookbackDays", lookbackDays)));
+    }
+
+    // ========== MODEL ARTIFACTS (Phase 0+1) ==========
+    @PostMapping("/models/{modelId}/versions/{versionId}/artifact")
+    public ResponseEntity<ApiResponse<AiModelVersion>> uploadArtifact(
+            @PathVariable UUID modelId,
+            @PathVariable UUID versionId,
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "featureColumns", required = false) String featureColumns,
+            @RequestParam(value = "calibrationBaseline", required = false) String calibrationBaseline,
+            @RequestParam(value = "calibrationType", required = false) String calibrationType) throws Exception {
+        AiModelVersion version = artifactService.storeArtifact(
+                modelId, versionId, file.getBytes(), file.getOriginalFilename());
+        artifactService.attachMetadata(
+                tenant(), modelId, versionId,
+                artifactService.parseFeatureColumns(featureColumns),
+                artifactService.parseSkuRatios(calibrationBaseline),
+                calibrationType);
+        return ResponseEntity.ok(ApiResponse.success(version, "Artifact stored and validated"));
+    }
+
+    @DeleteMapping("/models/{modelId}/versions/{versionId}/artifact")
+    public ResponseEntity<ApiResponse<Void>> deleteArtifact(
+            @PathVariable UUID modelId, @PathVariable UUID versionId) {
+        onnxRuntimeService.unload(versionId);
+        return ResponseEntity.ok(ApiResponse.success(null, "Artifact unloaded"));
+    }
+
+    // ========== CALIBRATION (Phase 0+1) ==========
+    @GetMapping("/models/{modelId}/calibrations")
+    public ResponseEntity<ApiResponse<List<AiCalibration>>> getCalibrations(@PathVariable UUID modelId) {
+        return ResponseEntity.ok(ApiResponse.success(calibrationService.listForModel(tenant(), modelId)));
+    }
+
+    @DeleteMapping("/models/{modelId}/calibrations")
+    public ResponseEntity<ApiResponse<Void>> clearCalibrations(@PathVariable UUID modelId) {
+        calibrationService.clearForModel(modelId);
+        return ResponseEntity.ok(ApiResponse.success(null, "Calibrations cleared"));
+    }
+}

@@ -1,0 +1,108 @@
+import client from './client'
+import { ApiResponse, Picklist, PicklistItem } from '../types'
+
+export async function getPicklists(status?: string): Promise<ApiResponse<Picklist[]>> {
+  try {
+    const params = status ? { status } : {}
+    const { data } = await client.get('/picking/lists', { params })
+    return data
+  } catch (err: any) {
+    const msg = err?.response?.data?.message || err?.message || 'Failed to get picklists'
+    return { success: false, error: msg } as any
+  }
+}
+
+export async function getPicklist(id: string): Promise<ApiResponse<Picklist>> {
+  try {
+    const { data } = await client.get(`/picking/lists/${id}`)
+    return data
+  } catch (err: any) {
+    const msg = err?.response?.data?.message || err?.message || 'Failed to get picklist'
+    return { success: false, error: msg } as any
+  }
+}
+
+export async function getPicklistItems(id: string): Promise<ApiResponse<PicklistItem[]>> {
+  try {
+    const { data } = await client.get(`/picking/lists/${id}/items`)
+    return data
+  } catch (err: any) {
+    const msg = err?.response?.data?.message || err?.message || 'Failed to get picklist items'
+    return { success: false, error: msg } as any
+  }
+}
+
+export async function createPicklist(payload: Partial<Picklist>): Promise<ApiResponse<Picklist>> {
+  try {
+    const { data } = await client.post('/picking/lists', payload)
+    return data
+  } catch (err: any) {
+    const msg = err?.response?.data?.message || err?.message || 'Failed to create picklist'
+    return { success: false, error: msg } as any
+  }
+}
+
+export async function assignPicker(picklistId: string, staffId: string): Promise<ApiResponse<Picklist>> {
+  try {
+    const { data } = await client.post(`/picking/lists/${picklistId}/assign`, null, { params: { staffId } })
+    return data
+  } catch (err: any) {
+    const msg = err?.response?.data?.message || err?.message || 'Failed to assign picker'
+    return { success: false, error: msg } as any
+  }
+}
+
+export async function pickItem(itemId: string, staffId: string): Promise<ApiResponse<PicklistItem>> {
+  try {
+    const { data } = await client.post(`/picking/items/${itemId}/pick`, null, { params: { staffId } })
+    return data
+  } catch (err: any) {
+    const msg = err?.response?.data?.message || err?.message || 'Failed to pick item'
+    return { success: false, error: msg } as any
+  }
+}
+
+export async function pickAllItems(id: string, staffId?: string): Promise<ApiResponse<Picklist>> {
+  try {
+    const { data } = await client.post(`/picking/lists/${id}/pick-all`, null, {
+      params: staffId ? { staffId } : {},
+    })
+    return data
+  } catch (err: any) {
+    const msg = err?.response?.data?.message || err?.message || 'Failed to pick all items'
+    return { success: false, error: msg } as any
+  }
+}
+
+export async function completePicklist(id: string): Promise<ApiResponse<Picklist>> {
+  try {
+    const { data } = await client.post(`/picking/lists/${id}/complete`)
+    return data
+  } catch (err: any) {
+    const msg = err?.response?.data?.message || err?.message || 'Failed to complete picklist'
+    return { success: false, error: msg } as any
+  }
+}
+
+export async function cancelPicklist(id: string): Promise<ApiResponse<Picklist>> {
+  try {
+    const { data } = await client.post(`/picking/lists/${id}/cancel`)
+    return data
+  } catch (err: any) {
+    const msg = err?.response?.data?.message || err?.message || 'Failed to cancel picklist'
+    return { success: false, error: msg } as any
+  }
+}
+
+export async function getPickingKPIs(): Promise<ApiResponse<Record<string, number>>> {
+  try {
+    const { data: raw } = await client.get('/orders/stats')
+    const res = raw as any
+    if (res && res.success === false) {
+      return { success: true, data: { activePicklists: 0, completedToday: 0, pendingItems: 0, pickedItems: 0 } }
+    }
+    return raw
+  } catch {
+    return { success: true, data: { activePicklists: 0, completedToday: 0, pendingItems: 0, pickedItems: 0 } }
+  }
+}

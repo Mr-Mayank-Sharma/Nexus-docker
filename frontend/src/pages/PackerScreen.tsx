@@ -1,0 +1,163 @@
+import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import {
+  PackagePlus, Package, Box, Printer, CheckCircle, Search,
+  Clock, QrCode, Scan,
+} from 'lucide-react'
+import { useToast } from '../hooks/useToast'
+import * as packingApi from '../api/packing'
+import Autocomplete from '../components/common/Autocomplete'
+import PermissionGate from '../components/rbac/PermissionGate'
+import { EnterpriseKPICard } from '../components/enterprise'
+
+export default function PackerScreen() {
+  const navigate = useNavigate()
+  const { addToast } = useToast()
+  const queryClient = useQueryClient()
+  const [scanInput, setScanInput] = useState('')
+
+  const { data: packages = [] } = useQuery({
+    queryKey: ['packer-packages'],
+    queryFn: async () => {
+      const res = await packingApi.getPackages({})
+      const d = res.data
+      return (Array.isArray(d) ? d : (d?.content ?? [])).slice(0, 20)
+    },
+  })
+
+  const startPacking = useMutation({
+    mutationFn: async (id: string) => await packingApi.startPacking(id),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['packer-packages'] }); addToast({ type: 'success', title: 'Packing started' }) },
+    onError: (e: any) => addToast({ type: 'error', title: e?.message || 'Failed to start packing' }),
+  })
+
+  const completePacking = useMutation({
+    mutationFn: async (id: string) => await packingApi.completePacking(id, 'packer-station-1'),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['packer-packages'] }); addToast({ type: 'success', title: 'Package completed' }) },
+    onError: (e: any) => addToast({ type: 'error', title: e?.message || 'Failed to complete packing' }),
+  })
+
+  const pendingPacks = packages.filter((p: any) => p.status === 'PENDING_PACK' || p.status === 'PENDING')
+  const inProgress = packages.filter((p: any) => p.status === 'PACKING' || p.status === 'IN_PROGRESS')
+
+  const kpis = [
+    { title: 'To Pack', value: String(pendingPacks.length), icon: <Package className="w-5 h-5" />, color: 'warning' as const, trend: null },
+    { title: 'Packed Today', value: String(packages.filter((p: any) => ['PACKED', 'LABELED', 'SHIPPED'].includes(p.status)).length), icon: <PackagePlus className="w-5 h-5" />, color: 'success' as const, trend: null },
+    { title: 'In Progress', value: String(inProgress.length), icon: <Box className="w-5 h-5" />, color: 'info' as const, trend: null },
+    { title: 'Total Packages', value: String(packages.length), icon: <Clock className="w-5 h-5" />, color: 'primary' as const, trend: null },
+  ]
+
+  return (
+    <PermissionGate resource="warehouse" action="view">
+      <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-[var(--text-primary)] flex items-center gap-2.5">
+            <PackagePlus className="w-7 h-7 text-[var(--nexus-success-500)]" />
+            Packing Station
+          </h1>
+          <p className="text-sm text-[var(--text-secondary)] mt-1">Scan, pack, and label orders for shipment</p>
+        </div>
+        <button type="button" onClick={() => navigate('/packing')} className="enterprise-btn-secondary text-sm flex items-center gap-1.5 px-4 py-2">
+          <Box className="w-4 h-4" /> Full Packing View
+        </button>
+      </div>
+
+      <div className="grid grid-cols-4 gap-4">
+        {kpis.map(k => (
+          <EnterpriseKPICard key={k.title} title={k.title} value={k.value} icon={k.icon} color={k.color} trend={k.trend} />
+        ))}
+      </div>
+
+      {/* Scan Bar */}
+      <div className="enterprise-card p-4">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-[var(--nexus-success-50)] dark:bg-[var(--nexus-success-900)]/20 flex items-center justify-center">
+            <Scan className="w-5 h-5 text-[var(--nexus-success-600)]" />
+          </div>
+          <div className="relative flex-1">
+            <Autocomplete
+              value={scanInput}
+              onChange={setScanInput}
+              placeholder="Scan or enter order / package ID..."
+              minChars={0}
+              inputClassName="w-full pl-10 pr-4 py-3 text-sm border-2 border-[var(--nexus-success-200)] dark:border-[var(--nexus-success-800)] rounded-xl bg-[var(--surface-base)] text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--nexus-success-500)] focus:border-[var(--nexus-success-500)]"
+            />
+            <QrCode className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--nexus-success-400)]" />
+          </div>
+          <button type="button" className="enterprise-btn-primary text-sm px-6 py-3 bg-[var(--nexus-success-600)] hover:bg-[var(--nexus-success-700)]">
+            <Search className="w-4 h-4" /> Find
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-6">
+        {/* Pending Queue */}
+        <div className="enterprise-card p-5">
+          <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-4 flex items-center gap-2">
+            <Package className="w-4 h-4 text-[var(--nexus-warning-500)]" /> Packing Queue
+            <span className="ml-auto text-xs text-[var(--text-tertiary)]">{pendingPacks.length} items</span>
+          </h3>
+          {pendingPacks.length === 0 ? (
+            <div className="text-center py-8 text-[var(--text-tertiary)]">
+              <CheckCircle className="w-10 h-10 mx-auto mb-2 text-[var(--nexus-success-300)]" />
+              <p className="text-sm">All caught up!</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {pendingPacks.slice(0, 8).map((pkg: any, i: number) => (
+                <div key={pkg.id || i} className="flex items-center justify-between p-3 rounded-lg bg-[var(--surface-sunken)]/50 hover:bg-[var(--surface-muted)] transition-colors">
+                  <div className="flex items-center gap-3">
+                    <Package className="w-4 h-4 text-[var(--text-tertiary)]" />
+                    <div>
+                      <p className="text-sm font-medium text-[var(--text-primary)]">Package #{pkg.id?.slice(0, 8) || `PKG-${i + 1}`}</p>
+                      <p className="text-xs text-[var(--text-secondary)]">{pkg.orderNumber || `ORD-${i + 1}`}</p>
+                    </div>
+                  </div>
+                  <button type="button" onClick={() => startPacking.mutate(pkg.id)} className="enterprise-btn-primary text-xs px-3 py-1.5 bg-[var(--nexus-success-600)] hover:bg-[var(--nexus-success-700)]">
+                    Start Packing
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* In Progress */}
+        <div className="enterprise-card p-5">
+          <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-4 flex items-center gap-2">
+            <Box className="w-4 h-4 text-[var(--nexus-primary-500)]" /> In Progress
+          </h3>
+          {inProgress.length === 0 ? (
+            <div className="text-center py-8 text-[var(--text-tertiary)]">
+              <PackagePlus className="w-10 h-10 mx-auto mb-2 text-[var(--text-tertiary)]" />
+              <p className="text-sm">No active packing</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {inProgress.map((pkg: any, i: number) => (
+                <div key={pkg.id || i} className="flex items-center justify-between p-3 rounded-lg bg-[var(--nexus-primary-50)] dark:bg-[var(--nexus-primary-900)]/10 border border-[var(--nexus-primary-200)] dark:border-[var(--nexus-primary-800)]">
+                  <div className="flex items-center gap-3">
+                    <Box className="w-4 h-4 text-[var(--nexus-primary-500)]" />
+                    <div>
+                      <p className="text-sm font-medium text-[var(--text-primary)]">Package #{pkg.id?.slice(0, 8)}</p>
+                      <p className="text-xs text-[var(--text-secondary)]">3 items · Box size: M</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button type="button" className="enterprise-btn-secondary text-xs px-2 py-1"><Printer className="w-3 h-3" /></button>
+                    <button type="button" onClick={() => completePacking.mutate(pkg.id)} className="enterprise-btn-primary text-xs px-3 py-1.5 bg-[var(--nexus-success-600)] hover:bg-[var(--nexus-success-700)]">
+                      <CheckCircle className="w-3 h-3" /> Complete
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+    </PermissionGate>
+  )
+}
