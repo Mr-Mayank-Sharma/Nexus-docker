@@ -30,6 +30,9 @@ public class CompanySettings {
     @Column(name = "company_name")
     private String companyName;
 
+    @Column(name = "plan", nullable = false)
+    private String plan;
+
     @Column(name = "company_logo")
     private String companyLogo;
 

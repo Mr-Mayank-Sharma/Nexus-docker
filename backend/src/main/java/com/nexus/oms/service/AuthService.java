@@ -232,7 +232,26 @@ public class AuthService {
 
         userRepository.save(user);
 
+        provisionTenant(tenantId, request);
+
         return buildAuthResponse(user);
+    }
+
+    private void provisionTenant(UUID tenantId, RegisterRequest request) {
+        String companyName = request.getCompanyName() != null && !request.getCompanyName().isBlank()
+                ? request.getCompanyName().trim()
+                : request.getUsername() + "'s Company";
+
+        CompanySettings settings = CompanySettings.builder()
+                .tenantId(tenantId)
+                .companyName(companyName)
+                .plan("trial")
+                .defaultCurrency("USD")
+                .defaultLanguage("en")
+                .defaultTimezone("UTC")
+                .build();
+
+        companySettingsRepository.save(settings);
     }
 
     public String generateSsoAuthorizationUrl(String provider, String tenantId) {

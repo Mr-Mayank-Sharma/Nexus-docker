@@ -76,6 +76,7 @@ class AuthServiceTest {
             u.setId(UUID.randomUUID());
             return u;
         });
+        when(companySettingsRepository.save(any(CompanySettings.class))).thenAnswer(i -> i.getArgument(0));
         when(jwtTokenProvider.generateToken(eq("newuser"), eq("VIEWER"), any())).thenReturn("test-token");
 
         AuthResponse result = authService.register(request);
@@ -83,6 +84,42 @@ class AuthServiceTest {
         assertNotNull(result.getAccessToken());
         assertEquals("test-token", result.getAccessToken());
         verify(userRepository).save(any(NxUser.class));
+
+        org.mockito.ArgumentCaptor<CompanySettings> captor =
+                org.mockito.ArgumentCaptor.forClass(CompanySettings.class);
+        verify(companySettingsRepository).save(captor.capture());
+        CompanySettings settings = captor.getValue();
+        assertEquals("newuser's Company", settings.getCompanyName());
+        assertEquals("trial", settings.getPlan());
+        assertEquals("USD", settings.getDefaultCurrency());
+        assertEquals(result.getTenantId(), settings.getTenantId().toString());
+    }
+
+    @Test
+    void testRegister_WithCompanyName_ProvisionsTenantWithGivenName() {
+        RegisterRequest request = new RegisterRequest();
+        request.setUsername("newuser");
+        request.setPassword("Test1234!");
+        request.setRole("VIEWER");
+        request.setCompanyName("Acme Corp");
+
+        when(userRepository.existsByUsername("newuser")).thenReturn(false);
+        when(passwordEncoder.encode("Test1234!")).thenReturn("encoded-new");
+        when(userRepository.save(any(NxUser.class))).thenAnswer(i -> {
+            NxUser u = i.getArgument(0);
+            u.setId(UUID.randomUUID());
+            return u;
+        });
+        when(companySettingsRepository.save(any(CompanySettings.class))).thenAnswer(i -> i.getArgument(0));
+        when(jwtTokenProvider.generateToken(eq("newuser"), eq("VIEWER"), any())).thenReturn("test-token");
+
+        authService.register(request);
+
+        org.mockito.ArgumentCaptor<CompanySettings> captor =
+                org.mockito.ArgumentCaptor.forClass(CompanySettings.class);
+        verify(companySettingsRepository).save(captor.capture());
+        assertEquals("Acme Corp", captor.getValue().getCompanyName());
+        assertEquals("trial", captor.getValue().getPlan());
     }
 
     @Test

@@ -28,4 +28,7 @@ public class RegisterRequest {
     @Email(message = "Must be a valid email address")
     private String email;
     private String role;
+
+    @Size(max = 100, message = "Company name must be at most 100 characters")
+    private String companyName;
 }
