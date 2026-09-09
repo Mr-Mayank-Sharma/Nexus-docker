@@ -52,6 +52,7 @@ export default function LoginPage() {
   const [forgotEmail, setForgotEmail] = useState('')
 
   const [registerName, setRegisterName] = useState('')
+  const [registerCompany, setRegisterCompany] = useState('')
   const [registerEmail, setRegisterEmail] = useState('')
   const [registerPassword, setRegisterPassword] = useState('')
   const [registerConfirm, setRegisterConfirm] = useState('')
@@ -233,7 +234,7 @@ export default function LoginPage() {
   async function handleRegister(e: React.FormEvent) {
     e.preventDefault()
     setError('')
-    if (!registerName || !registerEmail || !registerPassword) {
+    if (!registerName || !registerCompany || !registerEmail || !registerPassword) {
       setError('Please fill in all fields')
       return
     }
@@ -249,6 +250,7 @@ export default function LoginPage() {
     try {
       const res = await authApi.register({
         username: registerName,
+        companyName: registerCompany,
         email: registerEmail,
         password: registerPassword,
         tenantId: selectedTenant?.id,
@@ -594,6 +596,17 @@ export default function LoginPage() {
                     className="input"
                     placeholder="John Doe"
                     autoFocus
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-[var(--text-secondary)] mb-1">Company name</label>
+                  <input
+                    type="text"
+                    value={registerCompany}
+                    onChange={e => setRegisterCompany(e.target.value)}
+                    className="input"
+                    placeholder="Acme Inc."
                   />
                 </div>
 

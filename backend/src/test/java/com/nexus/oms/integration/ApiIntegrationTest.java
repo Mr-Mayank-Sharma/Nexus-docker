@@ -27,7 +27,7 @@ class ApiIntegrationTest extends AbstractIntegrationTest {
     private void registerViewerUser() throws Exception {
         long ts = System.currentTimeMillis();
         String body = """
-                {"username": "intviewer-%d", "password": "Test1234!", "role": "VIEWER"}
+                {"username": "intviewer-%d", "password": "Test1234!", "role": "VIEWER", "companyName": "PMT Test Co"}
                 """.formatted(ts);
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
@@ -42,6 +42,9 @@ class ApiIntegrationTest extends AbstractIntegrationTest {
 
     private void seedViewerPermissions() {
         seedPermission(viewerTenantId, "VIEWER", "orders", "view", true, false);
+        // Tenant-level deny overrides the global VIEWER default (inventory:view=true)
+        // and keeps GET /inventory forbidden for this tenant.
+        seedPermission(viewerTenantId, "VIEWER", "inventory", "view", false, false);
     }
 
     @Test

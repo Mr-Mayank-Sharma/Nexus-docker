@@ -60,7 +60,7 @@ export async function resetPassword(request: ResetPasswordRequest): Promise<ApiR
   }
 }
 
-export async function register(data: { username: string; email: string; password: string; tenantId?: string }): Promise<ApiResponse<AuthResponse>> {
+export async function register(data: { username: string; companyName: string; email: string; password: string; tenantId?: string }): Promise<ApiResponse<AuthResponse>> {
   try {
     const { data: res } = await client.post('/auth/register', data)
     return res

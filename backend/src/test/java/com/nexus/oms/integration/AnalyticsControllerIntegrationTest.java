@@ -178,7 +178,7 @@ class AnalyticsControllerIntegrationTest extends AbstractIntegrationTest {
         }
         long ts = System.currentTimeMillis();
         String body = """
-                {"username": "analytics-viewer-%d", "password": "Test1234!", "role": "VIEWER"}
+                {"username": "analytics-viewer-%d", "password": "Test1234!", "role": "VIEWER", "companyName": "PMT Test Co"}
                 """.formatted(ts);
 
         HttpHeaders regHeaders = new HttpHeaders();
@@ -191,6 +191,11 @@ class AnalyticsControllerIntegrationTest extends AbstractIntegrationTest {
 
         com.fasterxml.jackson.databind.JsonNode regJson = objectMapper.readTree(regResp.getBody());
         String viewerToken = regJson.get("data").get("accessToken").asText();
+
+        // Tenant-level deny overrides the global VIEWER default (analytics:view=true)
+        // and keeps GET /analytics forbidden for this tenant.
+        seedPermission(java.util.UUID.fromString(regJson.get("data").get("tenantId").asText()),
+                "VIEWER", "analytics", "view", false, false);
 
         ResponseEntity<String> response = restTemplate.exchange(
                 baseUrl() + "/analytics", HttpMethod.GET,

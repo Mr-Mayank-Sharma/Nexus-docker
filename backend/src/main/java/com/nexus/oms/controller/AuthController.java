@@ -81,7 +81,7 @@ public class AuthController {
                         .name(settings.getCompanyName() != null ? settings.getCompanyName() : "Unnamed Company")
                         .logoUrl(settings.getCompanyLogo())
                         .isActive(true)
-                        .plan("enterprise")
+                        .plan(settings.getPlan() != null ? settings.getPlan() : "trial")
                         .build())
                 .collect(Collectors.toList());
         return ResponseEntity.ok(ApiResponse.success(tenants));

@@ -6,9 +6,11 @@ import com.nexus.oms.entity.CompanySettings;
 import com.nexus.oms.entity.NxUser;
 import com.nexus.oms.exception.BadRequestException;
 import com.nexus.oms.entity.RolePermission;
+import com.nexus.oms.entity.Warehouse;
 import com.nexus.oms.repository.CompanySettingsRepository;
 import com.nexus.oms.repository.RolePermissionRepository;
 import com.nexus.oms.repository.UserRepository;
+import com.nexus.oms.repository.WarehouseRepository;
 import com.nexus.oms.security.JwtTokenProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.authentication.BadCredentialsException;
@@ -19,6 +21,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.util.UriComponentsBuilder;
 
+import java.math.BigDecimal;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -50,6 +53,7 @@ public class AuthService {
     private final SsoProviderConfig ssoProviderConfig;
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
+    private final WarehouseRepository warehouseRepository;
 
     @Value("${app.frontend-url:http://localhost:5173}")
     private String frontendUrl;
@@ -65,9 +69,11 @@ public class AuthService {
                        CompanySettingsRepository companySettingsRepository,
                        RolePermissionRepository rolePermissionRepository,
                        SsoProviderConfig ssoProviderConfig,
-                       ObjectMapper objectMapper) {
+                       ObjectMapper objectMapper,
+                       WarehouseRepository warehouseRepository) {
         this(userRepository, passwordEncoder, jwtTokenProvider, companySettingsRepository,
-                rolePermissionRepository, ssoProviderConfig, objectMapper, HttpClient.newHttpClient());
+                rolePermissionRepository, ssoProviderConfig, objectMapper, HttpClient.newHttpClient(),
+                warehouseRepository);
     }
 
     AuthService(UserRepository userRepository,
@@ -77,7 +83,8 @@ public class AuthService {
                 RolePermissionRepository rolePermissionRepository,
                 SsoProviderConfig ssoProviderConfig,
                 ObjectMapper objectMapper,
-                HttpClient httpClient) {
+                HttpClient httpClient,
+                WarehouseRepository warehouseRepository) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtTokenProvider = jwtTokenProvider;
@@ -86,6 +93,7 @@ public class AuthService {
         this.ssoProviderConfig = ssoProviderConfig;
         this.objectMapper = objectMapper;
         this.httpClient = httpClient;
+        this.warehouseRepository = warehouseRepository;
     }
 
     public AuthResponse authenticate(LoginRequest request) {
@@ -167,6 +175,7 @@ public class AuthService {
                     .tenantId(tenantId)
                     .build();
             userRepository.save(user);
+            provisionTenant(tenantId, companyNameFromEmailDomain(email));
         }
 
         return buildAuthResponse(user);
@@ -232,15 +241,20 @@ public class AuthService {
 
         userRepository.save(user);
 
-        provisionTenant(tenantId, request);
+        provisionTenant(tenantId, companyNameFrom(request.getCompanyName(), request.getUsername()));
 
         return buildAuthResponse(user);
     }
 
-    private void provisionTenant(UUID tenantId, RegisterRequest request) {
-        String companyName = request.getCompanyName() != null && !request.getCompanyName().isBlank()
-                ? request.getCompanyName().trim()
-                : request.getUsername() + "'s Company";
+    /**
+     * Provisions CompanySettings for a tenant. Idempotent: skips if the tenant
+     * already has settings (e.g. SSO joining an existing tenant).
+     */
+    private void provisionTenant(UUID tenantId, String companyName) {
+        if (companySettingsRepository.findByTenantId(tenantId).isPresent()) {
+            log.debug("Tenant settings already exist for tenantId={}, skipping provisioning", tenantId);
+            return;
+        }
 
         CompanySettings settings = CompanySettings.builder()
                 .tenantId(tenantId)
@@ -252,6 +266,27 @@ public class AuthService {
                 .build();
 
         companySettingsRepository.save(settings);
+
+        // Default warehouse so order allocation works out of the box.
+        // OrderService allocates to active nodes first; when a tenant has no nodes yet,
+        // it falls back to ACTIVE warehouses. reserveAtomic matches node_id IS NULL
+        // shared-pool inventory rows, so a seeded warehouse is a safe allocation target.
+        Warehouse warehouse = Warehouse.builder()
+                .tenantId(tenantId)
+                .code("WH-001")
+                .name(companyName + " Main Warehouse")
+                .type("WAREHOUSE")
+                .status("ACTIVE")
+                .country("US")
+                .totalCapacitySqm(BigDecimal.valueOf(10000))
+                .build();
+        warehouseRepository.save(warehouse);
+    }
+
+    private String companyNameFrom(String companyName, String fallback) {
+        return companyName != null && !companyName.isBlank()
+                ? companyName.trim()
+                : fallback + "'s Company";
     }
 
     public String generateSsoAuthorizationUrl(String provider, String tenantId) {
@@ -384,9 +419,20 @@ public class AuthService {
                     .tenantId(tid)
                     .build();
             userRepository.save(user);
+            provisionTenant(tid, companyNameFromEmailDomain(email));
         }
 
         return user;
+    }
+
+    private String companyNameFromEmailDomain(String email) {
+        if (email != null && email.contains("@") && !email.startsWith("sso_")) {
+            String domain = email.substring(email.indexOf('@') + 1);
+            if (!domain.isBlank()) {
+                return domain;
+            }
+        }
+        return "SSO User's Company";
     }
 
     private AuthResponse buildAuthResponse(NxUser user) {

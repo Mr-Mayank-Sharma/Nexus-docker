@@ -65,7 +65,7 @@ const ALL_INTEGRATIONS: IntegrationCard[] = [
     description: 'Sync orders, products, and inventory from your Shopify stores in real-time',
     icon: <ShoppingBag className="w-6 h-6" />,
     color: 'bg-[var(--nexus-success-500)]',
-    status: 'coming_soon',
+    status: 'available',
     category: 'E-Commerce',
   },
   {
@@ -161,6 +161,7 @@ export default function IntegrationMarketplacePage() {
       amazon: '/integrations/amazon',
       ebay: '/integrations/ebay',
       walmart: '/integrations/walmart',
+      shopify: '/integrations/shopify',
     }
     const path = pathMap[id]
     if (path) {
@@ -180,6 +181,7 @@ export default function IntegrationMarketplacePage() {
       amazon: '/integrations/amazon',
       ebay: '/integrations/ebay',
       walmart: '/integrations/walmart',
+      shopify: '/integrations/shopify',
     }
     const path = pathMap[id]
     if (path) navigate(path)

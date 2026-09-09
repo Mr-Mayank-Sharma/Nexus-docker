@@ -59,7 +59,7 @@ public abstract class AbstractIntegrationTest {
         headers.setContentType(MediaType.APPLICATION_JSON);
 
         String body = """
-                {"username": "%s", "password": "%s", "role": "ADMIN"}
+                {"username": "%s", "password": "%s", "role": "ADMIN", "companyName": "PMT Test Co"}
                 """.formatted(username, password);
 
         ResponseEntity<String> response = restTemplate.exchange(

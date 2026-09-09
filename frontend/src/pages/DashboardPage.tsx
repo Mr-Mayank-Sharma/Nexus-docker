@@ -17,7 +17,6 @@ import {
 import type { TimelineEvent } from '../components/enterprise'
 import * as analyticsApi from '../api/analytics'
 import * as aiPlatformApi from '../api/aiPlatform'
-import * as pickingApi from '../api/picking'
 import * as inventoryApi from '../api/inventory'
 import promotionsApi from '../api/promotions'
 import endlessAisleApi from '../api/endlessAisle'
@@ -62,16 +61,6 @@ export default function DashboardPage() {
   const [taskQueue, setTaskQueue] = useState<any>(null)
   const [promotionStats, setPromotionStats] = useState<{ activeCount: number; totalUses: number; totalDiscount: number; topPromos: any[] }>({ activeCount: 0, totalUses: 0, totalDiscount: 0, topPromos: [] })
   const [endlessAisleStats, setEndlessAisleStats] = useState<{ pendingOrders: number; inTransit: number; delivered: number; cancelled: number; totalRevenue: number }>({ pendingOrders: 0, inTransit: 0, delivered: 0, cancelled: 0, totalRevenue: 0 })
-
-  // Fetch funnel data
-  const { data: picklists = [] } = useQuery({
-    queryKey: ['dashboard-picklists'],
-    queryFn: async () => {
-      const res = await pickingApi.getPicklists()
-      const d = res.data; return Array.isArray(d) ? d : (d?.content ?? [])
-    },
-    refetchInterval: 30000,
-  })
 
   const { data: inventoryItems = [] } = useQuery({
     queryKey: ['dashboard-inventory-health'],

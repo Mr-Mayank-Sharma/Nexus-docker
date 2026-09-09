@@ -42,7 +42,7 @@ class PermissionMatrixIntegrationTest extends AbstractIntegrationTest {
         long ts = System.currentTimeMillis();
         for (String role : ALL_ROLES) {
             String body = """
-                    {"username": "pmt-%s-%d", "password": "Test1234!", "role": "%s"}
+                    {"username": "pmt-%s-%d", "password": "Test1234!", "role": "%s", "companyName": "PMT Test Co"}
                     """.formatted(role.toLowerCase(), ts, role);
             ResponseEntity<String> resp = restTemplate.exchange(
                     baseUrl() + "/auth/register", HttpMethod.POST,
@@ -69,11 +69,24 @@ class PermissionMatrixIntegrationTest extends AbstractIntegrationTest {
         seedCustomerSupportPermissions();
     }
 
+    private void seedGlobalDefaults() {
+        // H2 test profile does not run Flyway, so the V24 global baseline
+        // (tenant_id IS NULL) is never inserted. Seed the rows this test
+        // relies on so a fresh tenant has defaults to inherit.
+        // Kept to the modules this test asserts: orders + inventory view.
+        for (String g : List.of("orders", "inventory")) {
+            seedPermission(null, "VIEWER", g, "view", true, false);
+        }
+    }
+
     private void seedViewerPermissions() {
         UUID tid = roleTenants.get("VIEWER");
         for (String g : List.of("orders", "products", "analytics", "shipments", "customers")) {
             seedPermission(tid, "VIEWER", g, "view", true, false);
         }
+        // Tenant-level deny overrides the global VIEWER default (inventory:view=true)
+        // and keeps GET /inventory forbidden for this tenant.
+        seedPermission(tid, "VIEWER", "inventory", "view", false, false);
     }
 
     private void seedCeoPermissions() {
@@ -370,7 +383,7 @@ class PermissionMatrixIntegrationTest extends AbstractIntegrationTest {
 
         ResponseEntity<String> regResp = restTemplate.exchange(
                 baseUrl() + "/auth/register", HttpMethod.POST,
-                new HttpEntity<>("{\"username\":\"pubtest\",\"password\":\"Test1234!\"}", plainHeaders()),
+                new HttpEntity<>("{\"username\":\"pubtest\",\"password\":\"Test1234!\",\"companyName\":\"PMT Test Co\"}", plainHeaders()),
                 String.class);
         assertTrue(regResp.getStatusCode().is2xxSuccessful() || regResp.getStatusCode().is4xxClientError(),
                 "Public /auth/register expected 2xx/4xx got " + regResp.getStatusCode());
@@ -391,7 +404,7 @@ class PermissionMatrixIntegrationTest extends AbstractIntegrationTest {
     void testPermissionResponseContainsPermissions() throws Exception {
         long ts = System.currentTimeMillis();
         String body = """
-                {"username": "permcheck-%d", "password": "Test1234!", "role": "VIEWER"}
+                {"username": "permcheck-%d", "password": "Test1234!", "role": "VIEWER", "companyName": "PMT Test Co"}
                 """.formatted(ts);
 
         ResponseEntity<String> resp = restTemplate.exchange(
@@ -403,5 +416,55 @@ class PermissionMatrixIntegrationTest extends AbstractIntegrationTest {
         assertTrue(data.has("permissions"), "AuthResponse should contain permissions field");
         assertNotNull(data.get("permissions"), "permissions should not be null");
         assertTrue(data.get("permissions").isArray(), "permissions should be an array");
+    }
+
+    @Test
+    @Order(14)
+    void testFreshTenantInheritsGlobalDefaults() throws Exception {
+        // No tenant-level rows are seeded for this tenant: the global V24
+        // defaults apply via the merged (tenant_id IS NULL) lookup.
+        seedGlobalDefaults();
+
+        long ts = System.currentTimeMillis();
+        String body = """
+                {"username": "inherit-%d", "password": "Test1234!", "role": "VIEWER", "companyName": "PMT Test Co"}
+                """.formatted(ts);
+
+        ResponseEntity<String> regResp = restTemplate.exchange(
+                baseUrl() + "/auth/register", HttpMethod.POST,
+                new HttpEntity<>(body, plainHeaders()), String.class);
+        assertEquals(HttpStatus.OK, regResp.getStatusCode());
+
+        JsonNode data = objectMapper.readTree(regResp.getBody()).get("data");
+        String token = data.get("accessToken").asText();
+        HttpHeaders headers = authHeaders(token);
+
+        // No tenant-level rows seeded for this tenant: global V24 defaults apply.
+        for (String endpoint : List.of("/orders", "/inventory")) {
+            ResponseEntity<String> resp = restTemplate.exchange(
+                    baseUrl() + endpoint, HttpMethod.GET,
+                    new HttpEntity<>(headers), String.class);
+            assertTrue(resp.getStatusCode().is2xxSuccessful(),
+                    "Fresh VIEWER GET " + endpoint + " expected 2xx (global default) got " + resp.getStatusCode());
+        }
+
+        ResponseEntity<String> postResp = restTemplate.exchange(
+                baseUrl() + "/orders", HttpMethod.POST,
+                new HttpEntity<>(PAYLOAD, headers), String.class);
+        assertEquals(HttpStatus.FORBIDDEN, postResp.getStatusCode(),
+                "Fresh VIEWER POST /orders expected 403 (global create=false)");
+
+        ResponseEntity<String> rbacResp = restTemplate.exchange(
+                baseUrl() + "/rbac", HttpMethod.GET,
+                new HttpEntity<>(headers), String.class);
+        assertEquals(HttpStatus.FORBIDDEN, rbacResp.getStatusCode(),
+                "Fresh VIEWER GET /rbac expected 403 (no global rbac)");
+
+        // Inherited permissions surface in the auth response.
+        assertTrue(data.has("permissions"), "AuthResponse should contain permissions field");
+        List<String> perms = new ArrayList<>();
+        data.get("permissions").forEach(p -> perms.add(p.asText()));
+        assertTrue(perms.contains("orders:view"),
+                "expected inherited orders:view in permissions but was " + perms);
     }
 }

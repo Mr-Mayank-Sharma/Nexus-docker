@@ -9,6 +9,7 @@ import com.nexus.oms.config.SsoProviderConfig;
 import com.nexus.oms.repository.CompanySettingsRepository;
 import com.nexus.oms.repository.RolePermissionRepository;
 import com.nexus.oms.repository.UserRepository;
+import com.nexus.oms.repository.WarehouseRepository;
 import com.nexus.oms.security.JwtTokenProvider;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -43,6 +44,8 @@ class AuthServiceTest {
     private SsoProviderConfig ssoProviderConfig;
     @Mock
     private java.net.http.HttpClient mockHttpClient;
+    @Mock
+    private WarehouseRepository warehouseRepository;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     private AuthService authService;
@@ -51,7 +54,7 @@ class AuthServiceTest {
 
     @BeforeEach
     void setUp() {
-        authService = new AuthService(userRepository, passwordEncoder, jwtTokenProvider, companySettingsRepository, rolePermissionRepository, ssoProviderConfig, objectMapper);
+        authService = new AuthService(userRepository, passwordEncoder, jwtTokenProvider, companySettingsRepository, rolePermissionRepository, ssoProviderConfig, objectMapper, warehouseRepository);
         tenantId = UUID.randomUUID();
         testUser = NxUser.builder()
                 .id(UUID.randomUUID())
@@ -238,6 +241,116 @@ class AuthServiceTest {
 
         assertEquals("new-sso-jwt", result.getAccessToken());
         verify(userRepository).save(any(NxUser.class));
+    }
+
+    @Test
+    void testSsoLogin_NewUser_ProvisionsTenantWithEmailDomainCompanyName() {
+        SsoLoginRequest request = new SsoLoginRequest();
+        request.setProvider("google");
+        request.setTenantId(tenantId.toString());
+        String payload = "{\"email\":\"newperson@gmail.com\"}";
+        String encodedPayload = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(payload.getBytes());
+        String idToken = "header." + encodedPayload + ".signature";
+        request.setIdToken(idToken);
+
+        when(userRepository.findByUsername("newperson")).thenReturn(Optional.empty());
+        when(passwordEncoder.encode(anyString())).thenReturn("encoded-sso-pass");
+        when(userRepository.save(any(NxUser.class))).thenAnswer(i -> i.getArgument(0));
+        when(companySettingsRepository.findByTenantId(any(UUID.class))).thenReturn(Optional.empty());
+        when(companySettingsRepository.save(any(CompanySettings.class))).thenAnswer(i -> i.getArgument(0));
+        when(rolePermissionRepository.findByTenantIdAndRole(any(UUID.class), eq("VIEWER"))).thenReturn(List.of());
+        when(jwtTokenProvider.generateToken(eq("newperson"), eq("VIEWER"), any(UUID.class))).thenReturn("new-sso-jwt");
+
+        authService.ssoLogin(request);
+
+        org.mockito.ArgumentCaptor<CompanySettings> captor =
+                org.mockito.ArgumentCaptor.forClass(CompanySettings.class);
+        verify(companySettingsRepository).save(captor.capture());
+        CompanySettings settings = captor.getValue();
+        assertEquals("gmail.com", settings.getCompanyName());
+        assertEquals("trial", settings.getPlan());
+        assertEquals("USD", settings.getDefaultCurrency());
+        assertEquals(tenantId, settings.getTenantId());
+    }
+
+    @Test
+    void testSsoLogin_NewUser_WithExistingTenantSettings_SkipsProvisioning() {
+        SsoLoginRequest request = new SsoLoginRequest();
+        request.setProvider("google");
+        request.setTenantId(tenantId.toString());
+        String payload = "{\"email\":\"newperson@gmail.com\"}";
+        String encodedPayload = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(payload.getBytes());
+        String idToken = "header." + encodedPayload + ".signature";
+        request.setIdToken(idToken);
+
+        CompanySettings existing = CompanySettings.builder()
+                .tenantId(tenantId)
+                .companyName("Existing Co")
+                .build();
+
+        when(userRepository.findByUsername("newperson")).thenReturn(Optional.empty());
+        when(passwordEncoder.encode(anyString())).thenReturn("encoded-sso-pass");
+        when(userRepository.save(any(NxUser.class))).thenAnswer(i -> i.getArgument(0));
+        when(companySettingsRepository.findByTenantId(tenantId)).thenReturn(Optional.of(existing));
+        when(rolePermissionRepository.findByTenantIdAndRole(any(UUID.class), eq("VIEWER"))).thenReturn(List.of());
+        when(jwtTokenProvider.generateToken(eq("newperson"), eq("VIEWER"), any(UUID.class))).thenReturn("new-sso-jwt");
+
+        authService.ssoLogin(request);
+
+        verify(companySettingsRepository, never()).save(any(CompanySettings.class));
+    }
+
+    @Test
+    void testSsoLogin_NewUser_WithoutTenantId_ProvisionsWithGeneratedTenant() {
+        SsoLoginRequest request = new SsoLoginRequest();
+        request.setProvider("google");
+        String payload = "{\"email\":\"newperson@gmail.com\"}";
+        String encodedPayload = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(payload.getBytes());
+        String idToken = "header." + encodedPayload + ".signature";
+        request.setIdToken(idToken);
+
+        when(userRepository.findByUsername("newperson")).thenReturn(Optional.empty());
+        when(passwordEncoder.encode(anyString())).thenReturn("encoded-sso-pass");
+        when(userRepository.save(any(NxUser.class))).thenAnswer(i -> i.getArgument(0));
+        when(companySettingsRepository.findByTenantId(any(UUID.class))).thenReturn(Optional.empty());
+        when(companySettingsRepository.save(any(CompanySettings.class))).thenAnswer(i -> i.getArgument(0));
+        when(rolePermissionRepository.findByTenantIdAndRole(any(UUID.class), eq("VIEWER"))).thenReturn(List.of());
+        when(jwtTokenProvider.generateToken(eq("newperson"), eq("VIEWER"), any(UUID.class))).thenReturn("new-sso-jwt");
+
+        authService.ssoLogin(request);
+
+        org.mockito.ArgumentCaptor<CompanySettings> captor =
+                org.mockito.ArgumentCaptor.forClass(CompanySettings.class);
+        verify(companySettingsRepository).save(captor.capture());
+        CompanySettings settings = captor.getValue();
+        assertNotNull(settings.getTenantId());
+        assertEquals("gmail.com", settings.getCompanyName());
+    }
+
+    @Test
+    void testSsoLogin_NewUser_SsoPrefixedEmail_FallbackCompanyName() {
+        SsoLoginRequest request = new SsoLoginRequest();
+        request.setProvider("google");
+        request.setTenantId(tenantId.toString());
+        String payload = "{\"email\":\"sso_okta_123@example.com\"}";
+        String encodedPayload = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(payload.getBytes());
+        String idToken = "header." + encodedPayload + ".signature";
+        request.setIdToken(idToken);
+
+        when(userRepository.findByUsername("sso_okta_123")).thenReturn(Optional.empty());
+        when(passwordEncoder.encode(anyString())).thenReturn("encoded-sso-pass");
+        when(userRepository.save(any(NxUser.class))).thenAnswer(i -> i.getArgument(0));
+        when(companySettingsRepository.findByTenantId(any(UUID.class))).thenReturn(Optional.empty());
+        when(companySettingsRepository.save(any(CompanySettings.class))).thenAnswer(i -> i.getArgument(0));
+        when(rolePermissionRepository.findByTenantIdAndRole(any(UUID.class), eq("VIEWER"))).thenReturn(List.of());
+        when(jwtTokenProvider.generateToken(eq("sso_okta_123"), eq("VIEWER"), any(UUID.class))).thenReturn("new-sso-jwt");
+
+        authService.ssoLogin(request);
+
+        org.mockito.ArgumentCaptor<CompanySettings> captor =
+                org.mockito.ArgumentCaptor.forClass(CompanySettings.class);
+        verify(companySettingsRepository).save(captor.capture());
+        assertEquals("SSO User's Company", captor.getValue().getCompanyName());
     }
 
     @Test
@@ -454,7 +567,7 @@ class AuthServiceTest {
 
         AuthService ssoAuthService = new AuthService(userRepository, passwordEncoder, jwtTokenProvider,
                 companySettingsRepository, rolePermissionRepository, ssoProviderConfig, objectMapper,
-                mockHttpClient);
+                mockHttpClient, warehouseRepository);
 
         String authUrl = ssoAuthService.generateSsoAuthorizationUrl("okta", tenantId.toString());
         java.util.regex.Matcher m = java.util.regex.Pattern.compile("state=([^&]+)").matcher(authUrl);
@@ -488,7 +601,7 @@ class AuthServiceTest {
 
         AuthService ssoAuthService = new AuthService(userRepository, passwordEncoder, jwtTokenProvider,
                 companySettingsRepository, rolePermissionRepository, ssoProviderConfig, objectMapper,
-                mockHttpClient);
+                mockHttpClient, warehouseRepository);
 
         String authUrl = ssoAuthService.generateSsoAuthorizationUrl("okta", tenantId.toString());
         java.util.regex.Matcher m = java.util.regex.Pattern.compile("state=([^&]+)").matcher(authUrl);
