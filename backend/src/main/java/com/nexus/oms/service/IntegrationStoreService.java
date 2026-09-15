@@ -6,7 +6,10 @@ import com.nexus.oms.dto.StoreSyncStatus;
 import com.nexus.oms.entity.*;
 import com.nexus.oms.exception.BadRequestException;
 import com.nexus.oms.exception.ResourceNotFoundException;
+import com.nexus.oms.integration.core.CredentialVault;
 import com.nexus.oms.repository.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.PageRequest;
@@ -20,22 +23,27 @@ import java.util.stream.Collectors;
 @Service
 public class IntegrationStoreService {
 
+    private static final Logger log = LoggerFactory.getLogger(IntegrationStoreService.class);
+
     private final NxIntegrationStoreRepository storeRepository;
     private final NxIntegrationStoreSettingRepository settingRepository;
     private final NxIntegrationSyncConfigRepository syncConfigRepository;
     private final NxSyncLogRepository syncLogRepository;
     private final ObjectMapper objectMapper;
+    private final CredentialVault credentialVault;
 
     public IntegrationStoreService(NxIntegrationStoreRepository storeRepository,
                                     NxIntegrationStoreSettingRepository settingRepository,
                                     NxIntegrationSyncConfigRepository syncConfigRepository,
                                     NxSyncLogRepository syncLogRepository,
-                                    ObjectMapper objectMapper) {
+                                    ObjectMapper objectMapper,
+                                    CredentialVault credentialVault) {
         this.storeRepository = storeRepository;
         this.settingRepository = settingRepository;
         this.syncConfigRepository = syncConfigRepository;
         this.syncLogRepository = syncLogRepository;
         this.objectMapper = objectMapper;
+        this.credentialVault = credentialVault;
     }
 
     @Cacheable(value = "storeSettings", key = "'stores:' + #tenantId + ':' + (#platform ?: 'all')")
@@ -79,11 +87,12 @@ public class IntegrationStoreService {
 
         if (request.getSettings() != null) {
             for (Map.Entry<String, String> entry : request.getSettings().entrySet()) {
+                boolean encrypted = entry.getKey().contains("token") || entry.getKey().contains("secret");
                 NxIntegrationStoreSetting setting = NxIntegrationStoreSetting.builder()
                         .storeId(store.getId())
                         .settingType(entry.getKey())
-                        .settingValue(entry.getValue())
-                        .isEncrypted(entry.getKey().contains("token") || entry.getKey().contains("secret"))
+                        .settingValue(encryptIfRequired(entry.getValue(), encrypted))
+                        .isEncrypted(encrypted)
                         .build();
                 settingRepository.save(setting);
             }
@@ -118,13 +127,16 @@ public class IntegrationStoreService {
 
         if (request.getSettings() != null) {
             for (Map.Entry<String, String> entry : request.getSettings().entrySet()) {
+                boolean encrypted = entry.getKey().contains("token") || entry.getKey().contains("secret");
                 NxIntegrationStoreSetting setting = settingRepository
                         .findByStoreIdAndSettingType(store.getId(), entry.getKey())
                         .orElse(NxIntegrationStoreSetting.builder()
                                 .storeId(store.getId())
                                 .settingType(entry.getKey())
+                                .isEncrypted(encrypted)
                                 .build());
-                setting.setSettingValue(entry.getValue());
+                setting.setIsEncrypted(encrypted);
+                setting.setSettingValue(encryptIfRequired(entry.getValue(), encrypted));
                 settingRepository.save(setting);
             }
         }
@@ -141,13 +153,26 @@ public class IntegrationStoreService {
 
     @Cacheable(value = "storeSettings", key = "'settings:' + #storeId")
     public List<NxIntegrationStoreSetting> getSettings(UUID storeId) {
-        return settingRepository.findByStoreId(storeId);
+        // Return detached copies with decrypted values so we never mutate (and
+        // risk dirty-flushing plaintext back onto) JPA-managed entities.
+        return settingRepository.findByStoreId(storeId).stream()
+                .map(s -> NxIntegrationStoreSetting.builder()
+                        .id(s.getId())
+                        .storeId(s.getStoreId())
+                        .settingType(s.getSettingType())
+                        .settingValue(decryptIfRequired(s.getSettingValue(), s.getIsEncrypted()))
+                        .description(s.getDescription())
+                        .isEncrypted(s.getIsEncrypted())
+                        .createdAt(s.getCreatedAt())
+                        .updatedAt(s.getUpdatedAt())
+                        .build())
+                .collect(Collectors.toList());
     }
 
     @Cacheable(value = "storeSettings", key = "'setting:' + #storeId + ':' + #settingType")
     public String getSetting(UUID storeId, String settingType) {
         return settingRepository.findByStoreIdAndSettingType(storeId, settingType)
-                .map(NxIntegrationStoreSetting::getSettingValue)
+                .map(s -> decryptIfRequired(s.getSettingValue(), s.getIsEncrypted()))
                 .orElse(null);
     }
 
@@ -155,7 +180,10 @@ public class IntegrationStoreService {
     public Map<String, String> getSettingsMap(UUID storeId) {
         return settingRepository.findByStoreId(storeId).stream()
                 .collect(Collectors.toMap(NxIntegrationStoreSetting::getSettingType,
-                        s -> s.getSettingValue() != null ? s.getSettingValue() : ""));
+                        s -> {
+                            String value = decryptIfRequired(s.getSettingValue(), s.getIsEncrypted());
+                            return value != null ? value : "";
+                        }));
     }
 
     @Transactional
@@ -168,7 +196,8 @@ public class IntegrationStoreService {
                         .settingType(settingType)
                         .isEncrypted(settingType.contains("token") || settingType.contains("secret"))
                         .build());
-        setting.setSettingValue(value);
+        setting.setIsEncrypted(settingType.contains("token") || settingType.contains("secret"));
+        setting.setSettingValue(encryptIfRequired(value, setting.getIsEncrypted()));
         settingRepository.save(setting);
     }
 
@@ -193,6 +222,31 @@ public class IntegrationStoreService {
                 .build();
         return status;
     }
+
+    // ── Encryption helpers ──────────────────────────────────────────────────
+
+    private String encryptIfRequired(String value, Boolean isEncrypted) {
+        if (Boolean.TRUE.equals(isEncrypted) && value != null && !value.isBlank()) {
+            return credentialVault.encrypt(value);
+        }
+        return value;
+    }
+
+    private String decryptIfRequired(String value, Boolean isEncrypted) {
+        if (Boolean.TRUE.equals(isEncrypted) && value != null && !value.isBlank()) {
+            try {
+                return credentialVault.decrypt(value);
+            } catch (RuntimeException e) {
+                // Legacy rows were flagged isEncrypted=true but stored as plaintext
+                // (encryption was never applied). Return as-is; it self-heals on next write.
+                log.warn("Failed to decrypt store setting; treating as legacy plaintext");
+                return value;
+            }
+        }
+        return value;
+    }
+
+    // ── Sync logs ───────────────────────────────────────────────────────────
 
     public List<NxSyncLog> getSyncLogs(UUID storeId, int limit) {
         NxIntegrationStore store = getStore(storeId);

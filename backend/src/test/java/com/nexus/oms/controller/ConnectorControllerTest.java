@@ -5,6 +5,7 @@ import com.nexus.oms.entity.NxIntegrationStoreSetting;
 import com.nexus.oms.entity.NxOrder;
 import com.nexus.oms.entity.NxSyncLog;
 import com.nexus.oms.entity.Product;
+import com.nexus.oms.integration.core.CredentialVault;
 import com.nexus.oms.repository.InventoryRepository;
 import com.nexus.oms.repository.NxIntegrationStoreRepository;
 import com.nexus.oms.repository.NxIntegrationStoreSettingRepository;
@@ -17,6 +18,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.ResponseEntity;
@@ -42,13 +44,15 @@ class ConnectorControllerTest {
     @Mock private InventoryRepository inventoryRepository;
     @Mock private ProductRepository productRepository;
 
+    private CredentialVault credentialVault;
     private ConnectorController controller;
     private UUID tenantId;
 
     @BeforeEach
     void setUp() {
+        credentialVault = new CredentialVault();
         controller = new ConnectorController(storeRepository, settingRepository, syncLogRepository,
-                orderRepository, orderItemRepository, inventoryRepository, productRepository);
+                orderRepository, orderItemRepository, inventoryRepository, productRepository, credentialVault);
         tenantId = UUID.randomUUID();
         TenantContext.setCurrentTenantId(tenantId);
     }
@@ -121,7 +125,12 @@ class ConnectorControllerTest {
         assertEquals(true, store.getIsActive());
         assertEquals("ACTIVE", store.getStatus());
         assertEquals(true, resp.getBody().get("hasCredentials"));
-        verify(settingRepository).save(any(NxIntegrationStoreSetting.class));
+        ArgumentCaptor<NxIntegrationStoreSetting> captor = ArgumentCaptor.forClass(NxIntegrationStoreSetting.class);
+        verify(settingRepository).save(captor.capture());
+        NxIntegrationStoreSetting saved = captor.getValue();
+        assertEquals(true, saved.getIsEncrypted());
+        assertNotEquals("tok-123", saved.getSettingValue());
+        assertEquals("tok-123", credentialVault.decrypt(saved.getSettingValue()));
     }
 
     @Test

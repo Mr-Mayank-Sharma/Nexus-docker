@@ -6,6 +6,7 @@ import com.nexus.oms.entity.NxInventory;
 import com.nexus.oms.entity.NxOrder;
 import com.nexus.oms.entity.NxSyncLog;
 import com.nexus.oms.entity.Product;
+import com.nexus.oms.integration.core.CredentialVault;
 import com.nexus.oms.repository.InventoryRepository;
 import com.nexus.oms.repository.NxIntegrationStoreRepository;
 import com.nexus.oms.repository.NxIntegrationStoreSettingRepository;
@@ -45,6 +46,7 @@ public class ConnectorController {
     private final OrderItemRepository orderItemRepository;
     private final InventoryRepository inventoryRepository;
     private final ProductRepository productRepository;
+    private final CredentialVault credentialVault;
 
     public ConnectorController(NxIntegrationStoreRepository storeRepository,
                                NxIntegrationStoreSettingRepository settingRepository,
@@ -52,7 +54,8 @@ public class ConnectorController {
                                OrderRepository orderRepository,
                                OrderItemRepository orderItemRepository,
                                InventoryRepository inventoryRepository,
-                               ProductRepository productRepository) {
+                               ProductRepository productRepository,
+                               CredentialVault credentialVault) {
         this.storeRepository = storeRepository;
         this.settingRepository = settingRepository;
         this.syncLogRepository = syncLogRepository;
@@ -60,6 +63,7 @@ public class ConnectorController {
         this.orderItemRepository = orderItemRepository;
         this.inventoryRepository = inventoryRepository;
         this.productRepository = productRepository;
+        this.credentialVault = credentialVault;
     }
 
     @Operation(summary = "Get connector status for all marketplaces")
@@ -173,7 +177,9 @@ public class ConnectorController {
                     return ns;
                 });
         Object token = body.get("accessToken");
-        setting.setSettingValue(token != null ? String.valueOf(token) : "authorized");
+        String rawToken = token != null ? String.valueOf(token) : "authorized";
+        setting.setSettingValue(credentialVault.encrypt(rawToken));
+        setting.setIsEncrypted(true);
         setting.setDescription("Authorized at " + LocalDateTime.now());
         settingRepository.save(setting);
 
