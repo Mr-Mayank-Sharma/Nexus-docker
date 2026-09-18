@@ -200,7 +200,7 @@ services:
   # MinIO — S3-compatible object storage (shipping labels, docs)
   # ---------------------------------------------------------------------------
   minio:
-    image: minio/minio:latest
+    image: quay.io/minio/minio:latest
     container_name: nexus-minio
     command: server /data --console-address ":9001"
     environment:
