@@ -113,6 +113,9 @@ services:
       APP_CREDENTIAL_ENCRYPTION_KEY: ${APP_CREDENTIAL_ENCRYPTION_KEY:?APP_CREDENTIAL_ENCRYPTION_KEY not set}
       # Spring profile
       SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
+      # Registration — prod disables anonymous sign-ups; set APP_REGISTRATION_ENABLED=true
+      # temporarily to create the first admin, then remove it and restart.
+      APP_REGISTRATION_ENABLED: ${APP_REGISTRATION_ENABLED:-false}
       # CORS / frontend
       NEXUS_CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://localhost:3000,http://localhost:5173}
       NEXUS_FRONTEND_URL: ${FRONTEND_URL:-http://localhost}
